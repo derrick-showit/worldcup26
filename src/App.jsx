@@ -388,37 +388,34 @@ export default function App() {
 
   /* join / rejoin */
   const pin6 = (v) => v.replace(/\D/g, "").slice(0, 6);
-  const signInWithGoogle = async () => {
-    setAuthErr("");
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: window.location.origin, queryParams: { hd: "showit.com", prompt: "select_account" } },
-    });
-    if (error) setAuthErr(error.message);
-  };
   const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
-  const [codeSent, setCodeSent] = useState(false);
+  const [pw, setPw] = useState("");
+  const [authMode, setAuthMode] = useState("signin"); // signin | signup
   const [authErr, setAuthErr] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
-  const sendCode = async () => {
-    setAuthErr(""); const em = email.trim().toLowerCase();
+  const domainErr = (m) => /(domain|not allowed|violates|showit)/i.test(m || "") ? "Only " + ALLOWED_DOMAIN + " emails can join." : m;
+  const submitAuth = async () => {
+    setAuthErr("");
+    const em = email.trim().toLowerCase();
     if (!em.endsWith(ALLOWED_DOMAIN)) return setAuthErr("Please use your " + ALLOWED_DOMAIN + " work email.");
+    if (pw.length < 6) return setAuthErr("Password must be at least 6 characters.");
     setAuthBusy(true);
-    const { error } = await supabase.auth.signInWithOtp({ email: em });
-    setAuthBusy(false);
-    if (error) return setAuthErr(/(domain|not allowed|invalid)/i.test(error.message) ? "Only " + ALLOWED_DOMAIN + " emails can join." : error.message);
-    setCodeSent(true);
+    if (authMode === "signup") {
+      const { error } = await supabase.auth.signUp({ email: em, password: pw });
+      setAuthBusy(false);
+      if (error) {
+        if (/already registered/i.test(error.message)) { setAuthMode("signin"); return setAuthErr("You already have an account — sign in instead."); }
+        return setAuthErr(domainErr(error.message));
+      }
+      // onAuthStateChange logs in (email confirmation must be OFF in Supabase)
+    } else {
+      const { error } = await supabase.auth.signInWithPassword({ email: em, password: pw });
+      setAuthBusy(false);
+      if (error) return setAuthErr(/invalid login/i.test(error.message) ? "Wrong email or password." : domainErr(error.message));
+    }
+    setPw("");
   };
-  const verifyCode = async () => {
-    setAuthErr(""); setAuthBusy(true);
-    const { error } = await supabase.auth.verifyOtp({ email: email.trim().toLowerCase(), token: code.trim(), type: "email" });
-    setAuthBusy(false);
-    if (error) return setAuthErr("That code didn't work — check it and try again.");
-    setCode(""); setCodeSent(false); setEmail("");
-    // onAuthStateChange loads the rest
-  };
-  const switchUser = async () => { try { await supabase.auth.signOut(); } catch {} setMe(null); setBracket({ ranks: {}, thirds: [], ko: {} }); setTab("picks"); setIsAdmin(false); setCodeSent(false); setEmail(""); setCode(""); };
+  const switchUser = async () => { try { await supabase.auth.signOut(); } catch {} setMe(null); setBracket({ ranks: {}, thirds: [], ko: {} }); setTab("picks"); setIsAdmin(false); setEmail(""); setPw(""); };
 
   const saveProfile = async (patch) => { const fresh = await jget("wc26:roster", true, []); const next = fresh.map((p) => (p.id === me.id ? { ...p, ...patch } : p)); await jset("wc26:roster", next, true); setRoster(next); setMe((m) => ({ ...m, ...patch })); };
 
@@ -484,34 +481,17 @@ export default function App() {
             ))}
           </div>
           <div className="wc-fade" style={S.card}>
-            {!codeSent && (
-              <>
-                <button onClick={signInWithGoogle} style={{ width: "100%", padding: 13, borderRadius: 11, border: "1px solid " + C.line, background: "#fff", color: C.ink, fontWeight: 700, fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
-                  <span style={{ fontFamily: "Arial, sans-serif", fontWeight: 800, fontSize: 17 }}>G</span>
-                  <span>Continue with Google</span>
-                </button>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "14px 0" }}>
-                  <div style={{ flex: 1, height: 1, background: C.line }} /><span style={{ fontSize: 11.5, color: C.muted }}>or use an email code</span><div style={{ flex: 1, height: 1, background: C.line }} />
-                </div>
-              </>
-            )}
-            {!codeSent ? (
-              <>
-                <label style={{ fontSize: 12.5, color: C.muted, fontWeight: 600 }}>Work email</label>
-                <input value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") sendCode(); }} placeholder={"you" + ALLOWED_DOMAIN} type="email" autoComplete="email" style={{ ...S.input, margin: "5px 0 6px" }} />
-                <p style={{ fontSize: 11.5, color: C.muted, margin: "2px 0 12px" }}>Only <strong>{ALLOWED_DOMAIN}</strong> addresses can join. We&apos;ll email you a 6-digit sign-in code.</p>
-                {authErr && <div style={{ color: C.red, fontSize: 13, marginBottom: 10, fontWeight: 600 }}>{authErr}</div>}
-                <button onClick={sendCode} disabled={authBusy} style={{ width: "100%", padding: 13, borderRadius: 11, border: "none", background: authBusy ? C.chip : C.green, color: authBusy ? C.muted : "#fff", fontWeight: 700, fontSize: 15, cursor: authBusy ? "default" : "pointer" }}>{authBusy ? "Sending…" : "Email me a code →"}</button>
-              </>
-            ) : (
-              <>
-                <div style={{ fontSize: 13.5, marginBottom: 10 }}>We sent a 6-digit code to <strong>{email}</strong>. Enter it below.</div>
-                <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} onKeyDown={(e) => { if (e.key === "Enter") verifyCode(); }} placeholder="••••••" inputMode="numeric" style={{ ...S.input, margin: "0 0 6px", letterSpacing: 8, textAlign: "center", fontSize: 20 }} />
-                {authErr && <div style={{ color: C.red, fontSize: 13, margin: "6px 0", fontWeight: 600 }}>{authErr}</div>}
-                <button onClick={verifyCode} disabled={authBusy || code.length < 6} style={{ width: "100%", padding: 13, borderRadius: 11, border: "none", background: authBusy || code.length < 6 ? C.chip : C.green, color: authBusy || code.length < 6 ? C.muted : "#fff", fontWeight: 700, fontSize: 15, cursor: authBusy || code.length < 6 ? "default" : "pointer" }}>{authBusy ? "Verifying…" : "Verify & enter →"}</button>
-                <button onClick={() => { setCodeSent(false); setAuthErr(""); setCode(""); }} style={{ width: "100%", marginTop: 8, padding: 8, background: "none", border: "none", color: C.muted, fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }}>Use a different email</button>
-              </>
-            )}
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              <button style={S.btn(authMode === "signin")} onClick={() => { setAuthMode("signin"); setAuthErr(""); }}>Sign in</button>
+              <button style={S.btn(authMode === "signup")} onClick={() => { setAuthMode("signup"); setAuthErr(""); }}>Create account</button>
+            </div>
+            <label style={{ fontSize: 12.5, color: C.muted, fontWeight: 600 }}>Work email</label>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submitAuth(); }} placeholder={"you" + ALLOWED_DOMAIN} type="email" autoComplete="email" style={{ ...S.input, margin: "5px 0 10px" }} />
+            <label style={{ fontSize: 12.5, color: C.muted, fontWeight: 600 }}>Password</label>
+            <input value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submitAuth(); }} placeholder={authMode === "signup" ? "Choose a password (6+ characters)" : "Your password"} type="password" autoComplete={authMode === "signup" ? "new-password" : "current-password"} style={{ ...S.input, margin: "5px 0 6px" }} />
+            <p style={{ fontSize: 11.5, color: C.muted, margin: "2px 0 12px" }}>Only <strong>{ALLOWED_DOMAIN}</strong> addresses can join.</p>
+            {authErr && <div style={{ color: C.red, fontSize: 13, marginBottom: 10, fontWeight: 600 }}>{authErr}</div>}
+            <button onClick={submitAuth} disabled={authBusy} style={{ width: "100%", padding: 13, borderRadius: 11, border: "none", background: authBusy ? C.chip : C.green, color: authBusy ? C.muted : "#fff", fontWeight: 700, fontSize: 15, cursor: authBusy ? "default" : "pointer" }}>{authBusy ? "…" : authMode === "signup" ? "Create account →" : "Sign in →"}</button>
           </div>
         </div>
       </div>

@@ -27,41 +27,34 @@ bracket to a champion, then watch the shared leaderboard update as real results 
 3. Then paste [`supabase-auth.sql`](./supabase-auth.sql), **Run**. This does two things:
    - rejects any sign-up whose email isn't `@showit.com` (enforced in the database), and
    - restricts all pool data so only signed-in users can read/write it.
-4. **Authentication → Sign In / Providers**: make sure **Email** is enabled.
-5. **Authentication → Email Templates → Magic Link**: so users get a typeable 6-digit code,
-   make sure the template body includes the token, e.g. add a line:
-   `Your sign-in code is: {{ .Token }}`
-   (Leaving the link in is fine too — clicking it also signs them in.)
-6. **Project Settings → API**, copy two values:
+4. **Authentication → Sign In / Providers → Email**: make sure **Email** is enabled, and turn
+   **OFF** the **"Confirm email"** toggle. This is the important one — with it off, accounts are
+   created instantly and **no email is ever sent**, so you never need an email/SMTP setup.
+5. **Project Settings → API Keys** (or the **Connect** dialog), copy two values:
    - **Project URL** → `VITE_SUPABASE_URL`
-   - **anon public** key → `VITE_SUPABASE_ANON_KEY`
+   - **Publishable key** (`sb_publishable_…`), or the legacy **anon** key → `VITE_SUPABASE_ANON_KEY`
 
 ### How sign-in works for your office
-Everyone signs in with their **@showit.com** identity — no passwords, no PINs. Two ways:
+Everyone makes a personal account with their **@showit.com email + a password** of their choosing.
+On first visit they tap **Create account**; after that they **Sign in**. Because Supabase's
+"Confirm email" is off (step 4 above), **no verification email is sent** — the account is live
+immediately. The `@showit.com` rule from `supabase-auth.sql` is enforced in the database, so no
+other domain can register, even though nothing is emailed.
 
-- **Continue with Google** (recommended) — one click, and it automatically brings their name and
-  Google profile photo into the pool. Best if Showit uses Google Workspace.
-- **Email code** — enter the work email, get a 6-digit code, type it in. (No photo this way; they
-  can paste one in their profile.)
+Honest tradeoff: since nothing is emailed, this doesn't *prove* a person owns that inbox — they
+need a valid `@showit.com` address and a password. For an internal office pool that's the right
+amount of friction. There's also no automated "forgot password" (that would need email); if someone
+forgets theirs, an admin can reset it for them in **Supabase → Authentication → Users**.
 
-Either way the `@showit.com` rule from `supabase-auth.sql` is enforced in the database.
+To change the allowed domain later, edit `@showit.com` in `supabase-auth.sql` (re-run it) and
+`ALLOWED_DOMAIN` near the top of `src/App.jsx`.
 
-#### Enabling Google sign-in (one-time)
-1. In **Google Cloud Console**, create an OAuth 2.0 Client ID (type: Web application).
-2. Add the Supabase callback as an **Authorized redirect URI** — Supabase shows the exact URL under
-   **Authentication → Sign In / Providers → Google** (looks like
-   `https://YOUR-PROJECT.supabase.co/auth/v1/callback`).
-3. Copy the Client ID + Client Secret into that Supabase Google provider screen and **Save**.
-4. In **Authentication → URL Configuration**, set **Site URL** to your Vercel URL (and add
-   `http://localhost:5173` to Redirect URLs for local dev).
-
-The app passes a `hd=showit.com` hint so Google steers people to their work account; the database
-rule is the hard guarantee. To change the allowed domain later, edit `@showit.com` in
-`supabase-auth.sql` (re-run it) and `ALLOWED_DOMAIN` near the top of `src/App.jsx`.
-
-#### Email-code template
-For the email-code fallback, in **Authentication → Email Templates → Magic Link**, make sure the
-body includes the code, e.g. `Your sign-in code is: {{ .Token }}`.
+#### Want one-click Google sign-in + auto profile photos instead?
+Optional. Enable the **Google** provider in **Authentication → Sign In / Providers**, create an
+OAuth client in Google Cloud Console, paste its Client ID/Secret into Supabase, and set your
+**Site URL** under **Authentication → URL Configuration**. Google sign-in sends no email either and
+pulls in names + photos automatically. (The current build uses email + password; ask if you want it
+switched back to Google.)
 
 > The anon key is meant to be public (it ships to the browser). With the auth SQL applied, the data
 > is only reachable by signed-in `@showit.com` users.
