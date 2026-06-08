@@ -17,6 +17,7 @@ if (!url || !anon) {
 }
 
 const supabase = url && anon ? createClient(url, anon) : null;
+export { supabase };
 const LS = (k) => "wc26local:" + k;
 
 export const storage = {

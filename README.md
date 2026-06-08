@@ -20,18 +20,51 @@ bracket to a champion, then watch the shared leaderboard update as real results 
 
 ---
 
-## Step 1 — Supabase (database)
+## Step 1 — Supabase (database + auth)
 
 1. Create a new Supabase project. Wait for it to finish provisioning.
-2. Open **SQL Editor → New query**, paste the contents of [`supabase.sql`](./supabase.sql), and **Run**.
-   This creates one `kv` table the app uses for all shared data.
-3. Open **Project Settings → API** and copy two values:
-   - **Project URL** → this is `VITE_SUPABASE_URL`
-   - **anon public** key → this is `VITE_SUPABASE_ANON_KEY`
+2. Open **SQL Editor → New query**, paste [`supabase.sql`](./supabase.sql), **Run** (creates the `kv` table).
+3. Then paste [`supabase-auth.sql`](./supabase-auth.sql), **Run**. This does two things:
+   - rejects any sign-up whose email isn't `@showit.com` (enforced in the database), and
+   - restricts all pool data so only signed-in users can read/write it.
+4. **Authentication → Sign In / Providers**: make sure **Email** is enabled.
+5. **Authentication → Email Templates → Magic Link**: so users get a typeable 6-digit code,
+   make sure the template body includes the token, e.g. add a line:
+   `Your sign-in code is: {{ .Token }}`
+   (Leaving the link in is fine too — clicking it also signs them in.)
+6. **Project Settings → API**, copy two values:
+   - **Project URL** → `VITE_SUPABASE_URL`
+   - **anon public** key → `VITE_SUPABASE_ANON_KEY`
 
-> The anon key is meant to be public (it ships to the browser). The SQL above allows open
-> read/write, which suits an honour-system office pool. For stricter control, add Supabase Auth
-> later and tighten the policies.
+### How sign-in works for your office
+Everyone signs in with their **@showit.com** identity — no passwords, no PINs. Two ways:
+
+- **Continue with Google** (recommended) — one click, and it automatically brings their name and
+  Google profile photo into the pool. Best if Showit uses Google Workspace.
+- **Email code** — enter the work email, get a 6-digit code, type it in. (No photo this way; they
+  can paste one in their profile.)
+
+Either way the `@showit.com` rule from `supabase-auth.sql` is enforced in the database.
+
+#### Enabling Google sign-in (one-time)
+1. In **Google Cloud Console**, create an OAuth 2.0 Client ID (type: Web application).
+2. Add the Supabase callback as an **Authorized redirect URI** — Supabase shows the exact URL under
+   **Authentication → Sign In / Providers → Google** (looks like
+   `https://YOUR-PROJECT.supabase.co/auth/v1/callback`).
+3. Copy the Client ID + Client Secret into that Supabase Google provider screen and **Save**.
+4. In **Authentication → URL Configuration**, set **Site URL** to your Vercel URL (and add
+   `http://localhost:5173` to Redirect URLs for local dev).
+
+The app passes a `hd=showit.com` hint so Google steers people to their work account; the database
+rule is the hard guarantee. To change the allowed domain later, edit `@showit.com` in
+`supabase-auth.sql` (re-run it) and `ALLOWED_DOMAIN` near the top of `src/App.jsx`.
+
+#### Email-code template
+For the email-code fallback, in **Authentication → Email Templates → Magic Link**, make sure the
+body includes the code, e.g. `Your sign-in code is: {{ .Token }}`.
+
+> The anon key is meant to be public (it ships to the browser). With the auth SQL applied, the data
+> is only reachable by signed-in `@showit.com` users.
 
 ## Step 2 — Push to GitHub
 

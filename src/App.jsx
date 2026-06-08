@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { supabase } from "./storage.js";
 
 /* ============================================================
    OFFICE BRACKET CHALLENGE — 2026 FIFA WORLD CUP
@@ -181,7 +182,7 @@ function bracketPoints(bracket, actual) {
 function computeStandings(roster, brackets, actual) {
   return roster.map((p) => {
     const { pts, champion } = bracketPoints(brackets[p.id] || {}, actual);
-    return { id: p.id, name: p.name || p.username, username: p.username, favTeam: p.favTeam, color: p.color || "#0E7A56", photo: p.photo, points: pts, champion };
+    return { id: p.id, name: p.name || p.username, username: p.username, favTeam: p.favTeam, color: p.color || "oklch(0 0 0)", photo: p.photo, points: pts, champion };
   }).sort((x, y) => y.points - x.points || x.name.localeCompare(y.name));
 }
 
@@ -203,21 +204,25 @@ const shuffle = (a) => { const x = [...a]; for (let i = x.length - 1; i > 0; i--
 const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }); } catch { return ""; } };
 const ago = (ts) => { const s = Math.floor((Date.now() - ts) / 1000); if (s < 60) return "just now"; if (s < 3600) return Math.floor(s / 60) + "m"; if (s < 86400) return Math.floor(s / 3600) + "h"; return Math.floor(s / 86400) + "d"; };
 
-const C = { paper: "#F2EEE3", card: "#FBF9F3", ink: "#1B1B17", muted: "#76715F", line: "#E4DECE", green: "#0E7A56", greenSoft: "#E7F0EA", red: "#BE3A2B", gold: "#B9892E", chip: "#EFE9DA", orange: "#E8722C", orangeSoft: "#FBEADF", blue: "#1E40C8" };
-const FONT = "ui-sans-serif, -apple-system, 'Segoe UI', Roboto, sans-serif";
-const SERIF = "'Fraunces', Georgia, serif";
+const C = { paper: "oklch(0.97306 0 0)", card: "#ffffff", ink: "oklch(0 0 0)", muted: "oklch(0.49497 0 0)", line: "oklch(0.91 0 0)", green: "oklch(0 0 0)", greenSoft: "oklch(0.94611 0 0)", red: "oklch(0 0 0)", gold: "oklch(0.28094 0 0)", chip: "oklch(0.94611 0 0)", orange: "oklch(0 0 0)", orangeSoft: "oklch(0.97306 0 0)", blue: "oklch(0 0 0)" };
+const FONT = "'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif";
+const TITLE = "'Showit Polymath', Georgia, serif";
+const SERIF = FONT;
 const S = {
-  page: { minHeight: "100%", background: C.paper, color: C.ink, fontFamily: FONT },
+  page: { minHeight: "100%", background: C.paper, color: C.ink, fontFamily: FONT, letterSpacing: "-0.011em" },
   wrap: { maxWidth: 820, margin: "0 auto", padding: "0 16px 64px" },
   display: { fontFamily: SERIF },
-  btn: (a) => ({ flex: 1, padding: "11px 8px", borderRadius: 10, cursor: "pointer", fontSize: 13.5, border: "1px solid " + (a ? C.ink : C.line), background: a ? C.ink : C.card, color: a ? C.paper : C.ink, fontWeight: a ? 700 : 500, transition: "all .14s" }),
-  card: { background: C.card, border: "1px solid " + C.line, borderRadius: 14, padding: 14 },
-  chip: { display: "inline-block", fontSize: 11, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", color: C.muted, background: C.chip, padding: "3px 8px", borderRadius: 999 },
-  input: { width: "100%", padding: "11px 12px", border: "1px solid " + C.line, borderRadius: 10, fontSize: 15, background: "#fff", color: C.ink },
+  btn: (a) => ({ flex: 1, padding: "11px 8px", borderRadius: 6, cursor: "pointer", fontSize: 13.5, border: "1px solid " + (a ? C.ink : C.line), background: a ? C.ink : C.card, color: a ? C.paper : C.ink, fontWeight: a ? 700 : 500, transition: "all .14s" }),
+  card: { background: C.card, border: "1px solid " + C.line, borderRadius: 10, padding: 14 },
+  chip: { display: "inline-block", fontSize: 11, fontWeight: 700, letterSpacing: ".04em", textTransform: "uppercase", color: C.muted, background: C.chip, padding: "3px 8px", borderRadius: 999 },
+  input: { width: "100%", padding: "11px 12px", border: "1px solid " + C.line, borderRadius: 6, fontSize: 15, background: "#fff", color: C.ink },
 };
 const styleTag = (
   <style>{`
-    @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap');
+    @font-face { font-family:'Showit Polymath'; src:url('/fonts/Showit-Polymath-Bold.woff') format('woff'); font-weight:700; font-style:normal; font-display:swap; }
+    @font-face { font-family:'Showit Polymath'; src:url('/fonts/Showit-Polymath-BoldItalic.woff') format('woff'); font-weight:700; font-style:italic; font-display:swap; }
+    @font-face { font-family:'Inter'; src:url('/fonts/InterVariable.woff2') format('woff2'); font-weight:100 900; font-style:normal; font-display:swap; }
+    @font-face { font-family:'Inter'; src:url('/fonts/InterVariable-Italic.woff2') format('woff2'); font-weight:100 900; font-style:italic; font-display:swap; }
     * { box-sizing: border-box; }
     ::selection { background: ${C.green}; color: #fff; }
     .wc-fade { animation: wcfade .35s ease both; }
@@ -283,21 +288,56 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const savingRef = useRef(false);
 
+  const ALLOWED_DOMAIN = "@showit.com";
+  const [session, setSession] = useState(null);
+
   const defaultBracket = () => ({ ranks: Object.fromEntries(GKEYS.map((g) => [g, [...GROUPS[g]]])), thirds: [], ko: {} });
 
+  // Load all shared pool data, and resolve / create this user's player record.
+  const loadShared = async (sess) => {
+    const ac = await jget("wc26:results", true, {});
+    const pin = await sGet("wc26:adminpin", true);
+    const ch = await jget("wc26:chat", true, []);
+    const bs = await loadAllBrackets();
+    let r = await jget("wc26:roster", true, []);
+    setActual(ac); setAdminPin(pin); setChat(ch); setBrackets(bs);
+    if (sess && sess.user) {
+      const id = sess.user.id;
+      const email = (sess.user.email || "").toLowerCase();
+      const meta = sess.user.user_metadata || {};
+      const gPhoto = meta.avatar_url || meta.picture || "";
+      const gName = meta.full_name || meta.name || (email.split("@")[0] || "player");
+      let row = r.find((p) => p.id === id);
+      if (!row) {
+        const local = email.split("@")[0] || "player";
+        row = { id, username: local, name: gName, email, favTeam: "", color: C.green, photo: gPhoto };
+        r = [...r, row]; await jset("wc26:roster", r, true);
+      } else if (gPhoto && !row.photo) {
+        // back-fill the Google photo if the user hasn't set their own
+        row = { ...row, photo: gPhoto };
+        r = r.map((p) => (p.id === id ? row : p)); await jset("wc26:roster", r, true);
+      }
+      setRoster(r); setMe(row); setBracket(bs[id] || defaultBracket()); firstWrite.current = true;
+    } else {
+      setRoster(r); setMe(null);
+    }
+  };
+
   useEffect(() => {
+    let unsub;
     (async () => {
-      const r = await jget("wc26:roster", true, []);
-      const ac = await jget("wc26:results", true, {});
-      const pin = await sGet("wc26:adminpin", true);
-      const ch = await jget("wc26:chat", true, []);
-      const meLocal = await jget("wc26:me", false, null);
-      const bs = await loadAllBrackets();
-      setRoster(r); setActual(ac); setAdminPin(pin); setChat(ch); setBrackets(bs);
-      const meRow = meLocal && r.find((p) => p.id === meLocal.id);
-      if (meRow) { setMe(meRow); setBracket(bs[meRow.id] || defaultBracket()); }
-      setLoading(false);
+      const { data } = await supabase.auth.getSession();
+      const sess = data ? data.session : null;
+      if (sess) await loadShared(sess);
+      setSession(sess); setLoading(false);
+      const s = supabase.auth.onAuthStateChange(async (_e, ns) => {
+        setSession(ns);
+        if (ns) await loadShared(ns); else { setMe(null); setBracket({ ranks: {}, thirds: [], ko: {} }); }
+      });
+      unsub = s.data.subscription;
     })();
+    return () => { if (unsub) unsub.unsubscribe(); };
+    /* eslint-disable-next-line */
   }, []);
 
   useEffect(() => {
@@ -342,32 +382,38 @@ export default function App() {
   }, [me]);
 
   /* join / rejoin */
-  const [joinUser, setJoinUser] = useState("");
-  const [joinPin, setJoinPin] = useState("");
-  const [joinMode, setJoinMode] = useState("new");
-  const [joinErr, setJoinErr] = useState("");
   const pin6 = (v) => v.replace(/\D/g, "").slice(0, 6);
-  const doJoin = async () => {
-    setJoinErr(""); const username = joinUser.trim(), pin = joinPin.trim();
-    if (username.length < 2) return setJoinErr("Pick a username (2+ characters).");
-    if (!/^\d{6}$/.test(pin)) return setJoinErr("PIN must be 6 digits.");
-    const fresh = await jget("wc26:roster", true, []);
-    if (joinMode === "new") {
-      if (fresh.some((p) => (p.username || "").toLowerCase() === username.toLowerCase())) return setJoinErr("That username is taken — try “I'm returning”.");
-      const player = { id: uid(), username, name: username, pin, favTeam: "", color: C.green, photo: "" };
-      const next = [...fresh, player]; await jset("wc26:roster", next, true); await jset("wc26:me", { id: player.id }, false);
-      setRoster(next); setMe(player); setBracket(defaultBracket()); firstWrite.current = true; setTab("profile");
-    } else {
-      const player = fresh.find((p) => (p.username || "").toLowerCase() === username.toLowerCase());
-      if (!player) return setJoinErr("No account with that username yet.");
-      if (player.pin !== pin) return setJoinErr("Wrong PIN.");
-      await jset("wc26:me", { id: player.id }, false);
-      const b = await jget("wc26:bracket:" + player.id, true, defaultBracket());
-      setRoster(fresh); setMe(player); setBracket(b); firstWrite.current = true; setTab("picks");
-    }
-    setJoinUser(""); setJoinPin("");
+  const signInWithGoogle = async () => {
+    setAuthErr("");
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin, queryParams: { hd: "showit.com", prompt: "select_account" } },
+    });
+    if (error) setAuthErr(error.message);
   };
-  const switchUser = async () => { try { await window.storage.delete("wc26:me", false); } catch {} setMe(null); setBracket({ ranks: {}, thirds: [], ko: {} }); setTab("picks"); setIsAdmin(false); };
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [authErr, setAuthErr] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const sendCode = async () => {
+    setAuthErr(""); const em = email.trim().toLowerCase();
+    if (!em.endsWith(ALLOWED_DOMAIN)) return setAuthErr("Please use your " + ALLOWED_DOMAIN + " work email.");
+    setAuthBusy(true);
+    const { error } = await supabase.auth.signInWithOtp({ email: em });
+    setAuthBusy(false);
+    if (error) return setAuthErr(/(domain|not allowed|invalid)/i.test(error.message) ? "Only " + ALLOWED_DOMAIN + " emails can join." : error.message);
+    setCodeSent(true);
+  };
+  const verifyCode = async () => {
+    setAuthErr(""); setAuthBusy(true);
+    const { error } = await supabase.auth.verifyOtp({ email: email.trim().toLowerCase(), token: code.trim(), type: "email" });
+    setAuthBusy(false);
+    if (error) return setAuthErr("That code didn't work — check it and try again.");
+    setCode(""); setCodeSent(false); setEmail("");
+    // onAuthStateChange loads the rest
+  };
+  const switchUser = async () => { try { await supabase.auth.signOut(); } catch {} setMe(null); setBracket({ ranks: {}, thirds: [], ko: {} }); setTab("picks"); setIsAdmin(false); setCodeSent(false); setEmail(""); setCode(""); };
 
   const saveProfile = async (patch) => { const fresh = await jget("wc26:roster", true, []); const next = fresh.map((p) => (p.id === me.id ? { ...p, ...patch } : p)); await jset("wc26:roster", next, true); setRoster(next); setMe((m) => ({ ...m, ...patch })); };
 
@@ -423,7 +469,7 @@ export default function App() {
         <div style={S.wrap}>
           <div style={{ padding: "44px 0 14px", textAlign: "center" }}>
             <div style={{ fontSize: 44 }}>🏆⚽</div>
-            <h1 style={{ ...S.display, fontSize: 40, lineHeight: 1.02, margin: "10px 0 6px", fontWeight: 700 }}>Office Bracket Challenge</h1>
+            <h1 style={{ ...S.display, fontFamily: TITLE, fontSize: 40, lineHeight: 1.02, margin: "10px 0 6px", fontWeight: 700 }}>Office Bracket Challenge</h1>
             <div style={{ ...S.display, fontSize: 19, color: C.green, fontWeight: 600 }}>FIFA World Cup 2026</div>
             <div style={{ ...S.chip, marginTop: 12 }}>11 Jun – 19 Jul · USA · Canada · Mexico</div>
             <p style={{ color: C.muted, maxWidth: 470, margin: "16px auto 0", lineHeight: 1.55 }}>Predict the whole tournament — rank the groups, pick the best third-placed teams, then build your knockout bracket all the way to the champion. Lock it in before the first kick-off.</p>
@@ -436,18 +482,34 @@ export default function App() {
             ))}
           </div>
           <div className="wc-fade" style={S.card}>
-            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              <button style={S.btn(joinMode === "new")} onClick={() => { setJoinMode("new"); setJoinErr(""); }}>Create account</button>
-              <button style={S.btn(joinMode === "back")} onClick={() => { setJoinMode("back"); setJoinErr(""); }}>I&apos;m returning</button>
-            </div>
-            <label style={{ fontSize: 12.5, color: C.muted, fontWeight: 600 }}>Username</label>
-            <input value={joinUser} onChange={(e) => setJoinUser(e.target.value)} placeholder="e.g. sam_accounts" style={{ ...S.input, margin: "5px 0 12px" }} />
-            <label style={{ fontSize: 12.5, color: C.muted, fontWeight: 600 }}>{joinMode === "new" ? "Choose a 6-digit PIN" : "Your 6-digit PIN"}</label>
-            <input value={joinPin} onChange={(e) => setJoinPin(pin6(e.target.value))} placeholder="••••••" inputMode="numeric" style={{ ...S.input, margin: "5px 0 6px", letterSpacing: 8 }} />
-            <p style={{ fontSize: 11.5, color: C.muted, margin: "2px 0 12px" }}>The PIN keeps others from editing your bracket — honour-system office pool, not a bank.</p>
-            {joinErr && <div style={{ color: C.red, fontSize: 13, marginBottom: 10, fontWeight: 600 }}>{joinErr}</div>}
-            <button onClick={doJoin} style={{ width: "100%", padding: 13, borderRadius: 11, border: "none", background: C.green, color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>{joinMode === "new" ? "Join the pool →" : "Sign in →"}</button>
-            {roster.length > 0 && <div style={{ marginTop: 14, fontSize: 12.5, color: C.muted }}>{roster.length} already playing: {roster.map((p) => p.name || p.username).join(", ")}</div>}
+            {!codeSent && (
+              <>
+                <button onClick={signInWithGoogle} style={{ width: "100%", padding: 13, borderRadius: 11, border: "1px solid " + C.line, background: "#fff", color: C.ink, fontWeight: 700, fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+                  <span style={{ fontFamily: "Arial, sans-serif", fontWeight: 800, fontSize: 17 }}>G</span>
+                  <span>Continue with Google</span>
+                </button>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "14px 0" }}>
+                  <div style={{ flex: 1, height: 1, background: C.line }} /><span style={{ fontSize: 11.5, color: C.muted }}>or use an email code</span><div style={{ flex: 1, height: 1, background: C.line }} />
+                </div>
+              </>
+            )}
+            {!codeSent ? (
+              <>
+                <label style={{ fontSize: 12.5, color: C.muted, fontWeight: 600 }}>Work email</label>
+                <input value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") sendCode(); }} placeholder={"you" + ALLOWED_DOMAIN} type="email" autoComplete="email" style={{ ...S.input, margin: "5px 0 6px" }} />
+                <p style={{ fontSize: 11.5, color: C.muted, margin: "2px 0 12px" }}>Only <strong>{ALLOWED_DOMAIN}</strong> addresses can join. We&apos;ll email you a 6-digit sign-in code.</p>
+                {authErr && <div style={{ color: C.red, fontSize: 13, marginBottom: 10, fontWeight: 600 }}>{authErr}</div>}
+                <button onClick={sendCode} disabled={authBusy} style={{ width: "100%", padding: 13, borderRadius: 11, border: "none", background: authBusy ? C.chip : C.green, color: authBusy ? C.muted : "#fff", fontWeight: 700, fontSize: 15, cursor: authBusy ? "default" : "pointer" }}>{authBusy ? "Sending…" : "Email me a code →"}</button>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 13.5, marginBottom: 10 }}>We sent a 6-digit code to <strong>{email}</strong>. Enter it below.</div>
+                <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} onKeyDown={(e) => { if (e.key === "Enter") verifyCode(); }} placeholder="••••••" inputMode="numeric" style={{ ...S.input, margin: "0 0 6px", letterSpacing: 8, textAlign: "center", fontSize: 20 }} />
+                {authErr && <div style={{ color: C.red, fontSize: 13, margin: "6px 0", fontWeight: 600 }}>{authErr}</div>}
+                <button onClick={verifyCode} disabled={authBusy || code.length < 6} style={{ width: "100%", padding: 13, borderRadius: 11, border: "none", background: authBusy || code.length < 6 ? C.chip : C.green, color: authBusy || code.length < 6 ? C.muted : "#fff", fontWeight: 700, fontSize: 15, cursor: authBusy || code.length < 6 ? "default" : "pointer" }}>{authBusy ? "Verifying…" : "Verify & enter →"}</button>
+                <button onClick={() => { setCodeSent(false); setAuthErr(""); setCode(""); }} style={{ width: "100%", marginTop: 8, padding: 8, background: "none", border: "none", color: C.muted, fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }}>Use a different email</button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -464,7 +526,7 @@ export default function App() {
       <div style={S.wrap}>
         <div style={{ padding: "22px 0 12px", display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 10 }}>
           <div>
-            <div style={{ ...S.display, fontSize: 24, fontWeight: 700, lineHeight: 1 }}>Bracket Challenge</div>
+            <div style={{ ...S.display, fontFamily: TITLE, fontSize: 24, fontWeight: 700, lineHeight: 1 }}>Bracket Challenge</div>
             <div style={{ ...S.display, fontSize: 14, color: C.green, fontWeight: 600 }}>World Cup 2026</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
@@ -758,7 +820,7 @@ function ChatPanel({ chat, me, isAdmin, chatInput, setChatInput, asUpdate, setAs
           {chat.map((m) => {
             const mine = m.uid === me.id;
             if (m.update) return (
-              <div key={m.id} style={{ margin: "10px 0", padding: "10px 12px", borderRadius: 12, background: "#FFF6E6", border: "1px solid " + C.gold }}>
+              <div key={m.id} style={{ margin: "10px 0", padding: "10px 12px", borderRadius: 12, background: C.chip, border: "1px solid " + C.gold }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.gold, letterSpacing: ".05em" }}>📣 UPDATE · {m.name} · {ago(m.ts)}</div>
                 <div style={{ fontSize: 14, marginTop: 3, fontWeight: 600 }}>{m.text}</div>
               </div>
@@ -788,7 +850,7 @@ function ChatPanel({ chat, me, isAdmin, chatInput, setChatInput, asUpdate, setAs
 
 /* ===================== PROFILE ===================== */
 function Profile({ me, saveProfile, bracket, resolved, actual }) {
-  const ACCENTS = [["Pitch", "#0E7A56"], ["Royal", "#2563A8"], ["Rosso", "#BE3A2B"], ["Grape", "#6D4AA8"], ["Amber", "#C9742B"], ["Teal", "#0E7A7A"], ["Berry", "#B83A6E"], ["Slate", "#44506B"]];
+  const ACCENTS = [["Ink", "oklch(0 0 0)"], ["Graphite", "oklch(0.28094 0 0)"], ["Slate", "oklch(0.38796 0 0)"], ["Steel", "oklch(0.49497 0 0)"], ["Stone", "oklch(0.60199 0 0)"], ["Silver", "oklch(0.709 0 0)"]];
   const [name, setName] = useState(me.name || me.username);
   const [fav, setFav] = useState(me.favTeam || "");
   const [color, setColor] = useState(me.color || C.green);
@@ -822,7 +884,7 @@ function Profile({ me, saveProfile, bracket, resolved, actual }) {
           {ACCENTS.map(([n, v]) => <button key={v} onClick={() => setColor(v)} title={n} style={{ width: 34, height: 34, borderRadius: "50%", background: v, cursor: "pointer", border: color === v ? "3px solid " + C.ink : "3px solid transparent", boxShadow: "0 0 0 1px " + C.line }} />)}
         </div>
         <button onClick={save} disabled={!dirty} style={{ width: "100%", padding: 12, borderRadius: 11, border: "none", background: dirty ? C.green : C.chip, color: dirty ? "#fff" : C.muted, fontWeight: 700, cursor: dirty ? "pointer" : "default" }}>{saved ? "Saved ✓" : "Save profile"}</button>
-        <p style={{ fontSize: 11.5, color: C.muted, marginTop: 10 }}>Username and PIN can&apos;t change — they&apos;re how you sign back in.</p>
+        <p style={{ fontSize: 11.5, color: C.muted, marginTop: 10 }}>You&apos;re signed in with your work email{me.email ? " (" + me.email + ")" : ""}. Your display name and look are yours to change anytime.</p>
       </div>
 
       <div style={{ ...S.chip, marginTop: 18 }}>Your bracket</div>
