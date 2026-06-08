@@ -325,18 +325,23 @@ export default function App() {
 
   useEffect(() => {
     let unsub;
+    const safety = setTimeout(() => setLoading(false), 8000);
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      const sess = data ? data.session : null;
-      if (sess) await loadShared(sess);
-      setSession(sess); setLoading(false);
-      const s = supabase.auth.onAuthStateChange(async (_e, ns) => {
-        setSession(ns);
-        if (ns) await loadShared(ns); else { setMe(null); setBracket({ ranks: {}, thirds: [], ko: {} }); }
-      });
-      unsub = s.data.subscription;
+      try {
+        if (!supabase) return; // not configured — finally clears loading, config screen shows
+        const { data } = await supabase.auth.getSession();
+        const sess = data ? data.session : null;
+        if (sess) await loadShared(sess);
+        setSession(sess);
+        const s = supabase.auth.onAuthStateChange(async (_e, ns) => {
+          setSession(ns);
+          if (ns) await loadShared(ns); else { setMe(null); setBracket({ ranks: {}, thirds: [], ko: {} }); }
+        });
+        unsub = s.data.subscription;
+      } catch (e) { console.error("init error", e); }
+      finally { clearTimeout(safety); setLoading(false); }
     })();
-    return () => { if (unsub) unsub.unsubscribe(); };
+    return () => { clearTimeout(safety); if (unsub) unsub.unsubscribe(); };
     /* eslint-disable-next-line */
   }, []);
 
@@ -432,10 +437,7 @@ export default function App() {
   /* bracket editing */
   const locked = Date.now() >= BRACKET_LOCK;
   const resolved = resolveBracket(bracket);
-  const moveTeam = (g, idx, dir) => {
-    if (locked) return;
-    setBracket((b) => { const arr = [...(b.ranks[g] || GROUPS[g])]; const j = idx + dir; if (j < 0 || j >= arr.length) return b; [arr[idx], arr[j]] = [arr[j], arr[idx]]; return { ...b, ranks: { ...b.ranks, [g]: arr } }; });
-  };
+  const reorderGroup = (g, arr) => { if (locked) return; setBracket((b) => ({ ...b, ranks: { ...b.ranks, [g]: arr } })); };
   const resetGroup = (g) => { if (locked) return; setBracket((b) => ({ ...b, ranks: { ...b.ranks, [g]: [...GROUPS[g]] } })); };
   const shuffleGroup = (g) => { if (locked) return; setBracket((b) => ({ ...b, ranks: { ...b.ranks, [g]: shuffle(b.ranks[g] || GROUPS[g]) } })); };
   const validThirds = GKEYS.map((g) => (bracket.ranks[g] || GROUPS[g])[2]);
@@ -460,7 +462,7 @@ export default function App() {
   const standings = computeStandings(roster, brackets, actual);
 
   if (loading) return (<div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 360 }}>{styleTag}<div style={{ textAlign: "center", color: C.muted }}><div style={{ fontSize: 34 }}>⚽</div><div style={{ marginTop: 8 }}>Loading the bracket…</div></div></div>);
-  if (!hasStore) return (<div style={S.page}>{styleTag}<div style={{ ...S.wrap, paddingTop: 40 }}><div style={S.card}><h2 style={{ ...S.display, margin: 0 }}>Storage unavailable</h2><p style={{ color: C.muted }}>This app saves through Claude's artifact storage — open it inside the Claude preview panel.</p></div></div></div>);
+  if (!supabase) return (<div style={S.page}>{styleTag}<div style={{ ...S.wrap, paddingTop: 40 }}><div style={S.card}><h2 style={{ ...S.display, margin: 0 }}>Almost there — add your keys</h2><p style={{ color: C.muted, lineHeight: 1.55 }}>The app can&apos;t reach the database yet. Set <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> (in Vercel → Project Settings → Environment Variables, or a local <code>.env</code> file) and redeploy. See the README for the full steps.</p></div></div></div>);
 
   /* ---------------- LANDING ---------------- */
   if (!me) {
@@ -562,7 +564,7 @@ export default function App() {
 
             {step === "groups" && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 12 }}>
-                {GKEYS.map((g) => <GroupCard key={g} g={g} order={bracket.ranks[g] || GROUPS[g]} locked={locked} onMove={moveTeam} onReset={resetGroup} onShuffle={shuffleGroup} />)}
+                {GKEYS.map((g) => <GroupCard key={g} g={g} order={bracket.ranks[g] || GROUPS[g]} locked={locked} onReorder={reorderGroup} onReset={resetGroup} onShuffle={shuffleGroup} />)}
                 <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end" }}>
                   <button onClick={() => setStep("thirds")} style={{ padding: "12px 22px", borderRadius: 11, border: "none", background: C.green, color: "#fff", fontWeight: 700, cursor: "pointer" }}>Next: best thirds →</button>
                 </div>
@@ -649,9 +651,29 @@ export default function App() {
 }
 
 /* ===================== GROUP CARD ===================== */
-function GroupCard({ g, order, locked, onMove, onReset, onShuffle }) {
+function GroupCard({ g, order, locked, onReorder, onReset, onShuffle }) {
   const tint = (i) => i < 2 ? C.greenSoft : i === 2 ? C.orangeSoft : "transparent";
   const tag = (i) => i < 2 ? { t: "Advances", c: C.green } : i === 2 ? { t: "3rd", c: C.orange } : { t: "Out", c: C.muted };
+  const [dragIdx, setDragIdx] = useState(null);
+  const dragRef = useRef(null);
+  const rowRefs = useRef([]);
+  const orderRef = useRef(order); orderRef.current = order;
+  const begin = (i, e) => { if (locked) return; try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) {} dragRef.current = i; setDragIdx(i); };
+  const move = (e) => {
+    const cur = dragRef.current; if (cur == null) return;
+    const y = e.clientY; let target = cur;
+    for (let j = 0; j < rowRefs.current.length; j++) {
+      const el = rowRefs.current[j]; if (!el) continue;
+      const r = el.getBoundingClientRect(); const mid = r.top + r.height / 2;
+      if (j < cur && y < mid) { target = j; break; }
+      if (j > cur && y > mid) { target = j; }
+    }
+    if (target !== cur) {
+      const arr = [...orderRef.current]; const m = arr.splice(cur, 1)[0]; arr.splice(target, 0, m);
+      onReorder(g, arr); dragRef.current = target; setDragIdx(target);
+    }
+  };
+  const end = (e) => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (x) {} dragRef.current = null; setDragIdx(null); };
   return (
     <div style={{ ...S.card, padding: 0, overflow: "hidden" }}>
       <div style={{ background: C.blue, color: "#fff", padding: "11px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -660,17 +682,14 @@ function GroupCard({ g, order, locked, onMove, onReset, onShuffle }) {
       </div>
       <div>
         {order.map((team, i) => {
-          const tg = tag(i);
+          const tg = tag(i); const dragging = dragIdx === i;
           return (
-            <div key={team} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderTop: i ? "1px solid " + C.line : "none", background: tint(i) }}>
+            <div key={team} ref={(el) => (rowRefs.current[i] = el)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderTop: i ? "1px solid " + C.line : "none", background: dragging ? C.card : tint(i), boxShadow: dragging ? "0 6px 16px rgba(0,0,0,.16)" : "none", position: "relative", zIndex: dragging ? 2 : 1 }}>
               <div style={{ width: 16, fontWeight: 700, color: C.muted, fontSize: 13 }}>{i + 1}</div>
               <span style={{ fontSize: 18 }}>{flag(team)}</span>
               <div style={{ flex: 1, fontSize: 13.5, fontWeight: 600 }}>{team}<span style={{ fontSize: 10.5, color: tg.c, fontWeight: 700, marginLeft: 6 }}>{tg.t}</span></div>
               {!locked && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <button onClick={() => onMove(g, i, -1)} disabled={i === 0} style={arrowBtn(i === 0)}>▲</button>
-                  <button onClick={() => onMove(g, i, 1)} disabled={i === order.length - 1} style={arrowBtn(i === order.length - 1)}>▼</button>
-                </div>
+                <div onPointerDown={(e) => begin(i, e)} onPointerMove={move} onPointerUp={end} onPointerCancel={end} title="Drag to reorder" style={{ touchAction: "none", cursor: dragging ? "grabbing" : "grab", color: C.muted, fontSize: 17, lineHeight: 1, padding: "4px 6px", userSelect: "none" }}>⠿</div>
               )}
             </div>
           );
@@ -685,7 +704,6 @@ function GroupCard({ g, order, locked, onMove, onReset, onShuffle }) {
     </div>
   );
 }
-const arrowBtn = (dis) => ({ width: 26, height: 18, lineHeight: "14px", fontSize: 10, borderRadius: 5, border: "1px solid " + C.line, background: dis ? C.chip : "#fff", color: dis ? C.line : C.ink, cursor: dis ? "default" : "pointer" });
 const miniBtn = { flex: 1, fontSize: 12, padding: "7px", borderRadius: 8, border: "1px solid " + C.line, background: "#fff", color: C.ink, cursor: "pointer", fontWeight: 600 };
 
 /* ===================== THIRDS STEP ===================== */
