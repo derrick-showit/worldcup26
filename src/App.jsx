@@ -498,7 +498,7 @@ export default function App() {
     );
   }
 
-  const tabs = [["picks", "My Bracket"], ["standings", "Standings"], ["chat", "Chat"], ["profile", "Profile"]];
+  const tabs = [["picks", "My Bracket"], ["standings", "Standings"], ["chat", "Banter"], ["profile", "Profile"]];
   const accent = me.color || C.green;
   const groupsDone = GKEYS.length;
   const thirdsDone = cleanThirds.length;
@@ -857,6 +857,21 @@ function Profile({ me, saveProfile, bracket, resolved, actual }) {
   useEffect(() => { setName(me.name || me.username); setFav(me.favTeam || ""); setColor(me.color || C.green); setPhoto(me.photo || ""); }, [me.id]);
   const dirty = name.trim() !== (me.name || me.username) || fav !== (me.favTeam || "") || color !== (me.color || C.green) || photo.trim() !== (me.photo || "");
   const save = async () => { await saveProfile({ name: name.trim() || me.username, favTeam: fav, color, photo: photo.trim() }); setSaved(true); setTimeout(() => setSaved(false), 1500); };
+  const [pw1, setPw1] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [pwMsg, setPwMsg] = useState(null);
+  const [pwBusy, setPwBusy] = useState(false);
+  const changePw = async () => {
+    setPwMsg(null);
+    if (!supabase) return setPwMsg({ ok: false, text: "Not connected to the database." });
+    if (pw1.length < 6) return setPwMsg({ ok: false, text: "Password must be at least 6 characters." });
+    if (pw1 !== pw2) return setPwMsg({ ok: false, text: "The two passwords don't match." });
+    setPwBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pw1 });
+    setPwBusy(false);
+    if (error) return setPwMsg({ ok: false, text: error.message });
+    setPw1(""); setPw2(""); setPwMsg({ ok: true, text: "Password updated ✓" });
+  };
   const preview = { name, username: me.username, favTeam: fav, color, photo: photo.trim() };
   const { pts } = bracketPoints(bracket, actual);
 
@@ -883,6 +898,17 @@ function Profile({ me, saveProfile, bracket, resolved, actual }) {
         </div>
         <button onClick={save} disabled={!dirty} style={{ width: "100%", padding: 12, borderRadius: 11, border: "none", background: dirty ? C.green : C.chip, color: dirty ? "#fff" : C.muted, fontWeight: 700, cursor: dirty ? "pointer" : "default" }}>{saved ? "Saved ✓" : "Save profile"}</button>
         <p style={{ fontSize: 11.5, color: C.muted, marginTop: 10 }}>You&apos;re signed in with your work email{me.email ? " (" + me.email + ")" : ""}. Your display name and look are yours to change anytime.</p>
+      </div>
+
+      <div style={{ ...S.chip, marginTop: 18 }}>Password</div>
+      <div style={{ ...S.card, marginTop: 10 }}>
+        <label style={{ fontSize: 12.5, color: C.muted, fontWeight: 600 }}>New password</label>
+        <input type="password" value={pw1} onChange={(e) => setPw1(e.target.value)} autoComplete="new-password" placeholder="At least 6 characters" style={{ ...S.input, margin: "5px 0 12px" }} />
+        <label style={{ fontSize: 12.5, color: C.muted, fontWeight: 600 }}>Confirm new password</label>
+        <input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") changePw(); }} autoComplete="new-password" placeholder="Re-enter it" style={{ ...S.input, margin: "5px 0 12px" }} />
+        {pwMsg && <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: pwMsg.ok ? C.ink : C.red }}>{pwMsg.text}</div>}
+        <button onClick={changePw} disabled={pwBusy || !pw1 || !pw2} style={{ width: "100%", padding: 12, borderRadius: 11, border: "none", background: (pwBusy || !pw1 || !pw2) ? C.chip : C.green, color: (pwBusy || !pw1 || !pw2) ? C.muted : "#fff", fontWeight: 700, cursor: (pwBusy || !pw1 || !pw2) ? "default" : "pointer" }}>{pwBusy ? "Updating…" : "Update password"}</button>
+        <p style={{ fontSize: 11.5, color: C.muted, marginTop: 10 }}>Changes your sign-in password right away — no email needed.</p>
       </div>
 
       <div style={{ ...S.chip, marginTop: 18 }}>Your bracket</div>
