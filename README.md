@@ -15,8 +15,8 @@ bracket to a champion, then watch the shared leaderboard update as real results 
 1. A [GitHub](https://github.com) account
 2. A [Supabase](https://supabase.com) account (the database)
 3. A [Vercel](https://vercel.com) account (the hosting)
-4. An [Anthropic API key](https://console.anthropic.com) — only if you want automatic results
-   (otherwise enter results by hand in the Admin section)
+4. A free [API-Football](https://dashboard.api-football.com) token — only if you want automatic
+   live results/standings (otherwise enter results by hand in the Admin section)
 
 ---
 
@@ -81,7 +81,7 @@ git push -u origin main
    |---|---|
    | `VITE_SUPABASE_URL` | your Supabase Project URL |
    | `VITE_SUPABASE_ANON_KEY` | your Supabase anon public key |
-   | `ANTHROPIC_API_KEY` | your Anthropic key (only for auto-results) |
+   | `API_FOOTBALL_KEY` | your free API-Football token (only for auto-results) |
 4. **Deploy**. You'll get a live URL like `your-pool.vercel.app` — share it with the office.
 
 That's it. Everyone who opens the URL shares one leaderboard.
@@ -103,11 +103,15 @@ use the Vercel CLI: `npm i -g vercel` then `vercel dev`.
 
 ## How automatic results work
 
-`/api/sync` asks Claude (with web search) for confirmed group standings, qualified third-placed
-teams, who advanced through each knockout round, the finalists, and the champion, and returns them
-as JSON. The app stores that and scores every bracket against it. It runs automatically after the
-tournament starts and via the **Sync now** button on the Standings → Tournament tab. If you'd
-rather not use an API key, skip `ANTHROPIC_API_KEY` and use the Admin section to enter results.
+`/api/sync` calls **API-Football** (`league=1, season=2026`) for current group standings and the
+knockout fixtures, maps the team names to the ones this app uses, and returns the outcomes the
+scoring runs on: each group's current order, the qualified third-placed teams, who advanced through
+each knockout round, the finalists, and the champion. Standings are read **live**, so the
+leaderboard updates during the group stage (shown as "provisional") and firms up as groups finish.
+It runs automatically after the tournament starts and via the **Sync now** button on the
+Standings → Tournament tab. Each sync is two API requests, so the free API-Football tier is plenty.
+If you'd rather not use any key, skip `API_FOOTBALL_KEY` and use the Admin section to enter results
+by hand.
 
 If the API ever rejects the model name or web-search tool version, update the two strings near the
 top of [`api/sync.js`](./api/sync.js) using the current values from https://docs.claude.com .
