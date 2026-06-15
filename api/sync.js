@@ -21,28 +21,33 @@ const GROUPS = {
 
 function buildPrompt() {
   const groups = Object.keys(GROUPS).map((g) => `${g}: ${GROUPS[g].join(", ")}`).join("\n");
-  return `Find 2026 FIFA World Cup results and current standings using web search. Today is ${new Date().toDateString()}.
+  return `Search the web for "2026 FIFA World Cup results scores" and "2026 FIFA World Cup group standings" to find the latest match results.
 
-Groups:
+The 2026 FIFA World Cup started June 11, 2026. Today is ${new Date().toDateString()}.
+
+The groups are:
 ${groups}
 
-Respond with ONLY this JSON (no markdown, no commentary):
+After searching, respond with ONLY this JSON object (no markdown fences, no commentary, no explanation):
 {
- "groupOrder": {"A":["current 1st","current 2nd","current 3rd","current 4th"]},
- "thirds": ["the third-placed teams that have OFFICIALLY qualified to the Round of 32 (only once the group stage is complete)"],
- "reachedR16": ["teams that have officially won their Round of 32 match"],
- "reachedQF": ["the teams officially in the quarter-finals"],
- "reachedSF": ["the teams officially in the semi-finals"],
- "finalists": ["the teams officially in the final"],
- "champion": "the World Cup winner once decided",
+ "groupOrder": {"A":["1st place team","2nd place team","3rd place team","4th place team"]},
+ "thirds": [],
+ "reachedR16": [],
+ "reachedQF": [],
+ "reachedSF": [],
+ "finalists": [],
+ "champion": null,
  "provisional": true
 }
+
 Rules:
-- groupOrder: give the CURRENT standings of every group that has played at least one match, ordering all four teams best-to-worst by the official ranking (points, then goal difference, then goals scored). Include groups even if they are NOT finished. Omit only groups with no matches played yet.
-- Use the exact team names from the groups list above.
-- "provisional": true while the tournament is in progress (group standings not yet final, or no champion); false only once the champion is decided.
-- If no matches have been played at all, return {"provisional": true}.
-- Output ONLY the JSON object — no explanation or any text before or after it.`;
+- groupOrder: For every group where at least one match has been played, list all 4 teams ordered by current standings (points, then goal difference, then goals scored). Include groups even if not all matches are done. Omit groups with zero matches played.
+- Use the EXACT team names from the groups list above (e.g. "Korea Republic" not "South Korea", "Türkiye" not "Turkey", "Ivory Coast" not "Côte d'Ivoire").
+- thirds: only fill once ALL group stage matches are complete — list the best third-placed teams that qualified for the Round of 32.
+- reachedR16/reachedQF/reachedSF/finalists/champion: fill only as those rounds are completed.
+- provisional: true while tournament is ongoing, false only once a champion is decided.
+- If somehow no matches have been played yet, return just: {"provisional": true}
+- CRITICAL: Output ONLY valid JSON. No text before or after.`;
 }
 
 export default async function handler(req, res) {
@@ -58,14 +63,19 @@ export default async function handler(req, res) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6", // update to a current model string from docs.claude.com if needed
-        max_tokens: 3000,
+        model: "claude-sonnet-4-6",
+        max_tokens: 4096,
         messages: [{ role: "user", content: buildPrompt() }],
-        tools: [{ type: "web_search_20260209", name: "web_search" }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
       }),
     });
     const data = await r.json();
-    if (data && data.error) { res.status(500).json({ error: data.error.message || "Anthropic API error" }); return; }
+    if (data && data.error) {
+      res.status(500).json({ error: data.error.message || "Anthropic API error" });
+      return;
+    }
+    // Extract text blocks from the response — web search results come as tool_use/tool_result
+    // blocks, but the final answer is in text blocks
     const blocks = (data.content || []).filter((b) => b.type === "text").map((b) => b.text || "");
     const tryParse = (raw) => {
       if (!raw) return null;
@@ -76,11 +86,15 @@ export default async function handler(req, res) {
       return null;
     };
     let json = null;
-    for (const cand of [blocks[blocks.length - 1], blocks.join("\n")]) { json = tryParse(cand); if (json) break; }
+    for (const cand of [blocks[blocks.length - 1], blocks.join("\n")]) {
+      json = tryParse(cand);
+      if (json) break;
+    }
     const hasData = json && (json.groupOrder || json.champion || json.thirds || json.reachedR16);
     if (!hasData) {
       const snip = blocks.join(" ").replace(/\s+/g, " ").trim().slice(0, 400);
-      res.status(200).json({ provisional: true, _debug: snip || "(the model returned no text — web search may have found nothing)" });
+      const allContent = JSON.stringify((data.content || []).map(b => ({ type: b.type, text: (b.text || "").slice(0, 100) }))).slice(0, 300);
+      res.status(200).json({ provisional: true, _debug: snip || "(no text blocks found)", _blocks: allContent });
       return;
     }
     res.status(200).json(json);
