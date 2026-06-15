@@ -376,13 +376,15 @@ export default function App() {
     if (syncing) return; setSyncing(true); if (!silent) setSyncMsg("Checking live FIFA results…");
     try {
       const resp = await fetch("/api/sync", { method: "POST" });
-      const json = await resp.json();
+      let json = {};
+      try { json = await resp.json(); } catch { throw new Error("The /api/sync function returned a non-JSON response (HTTP " + resp.status + "). It may not be deployed — check that the api/ folder shipped and you redeployed."); }
       if (json && json.error) throw new Error(json.error);
+      if (!resp.ok) throw new Error("Sync request failed (HTTP " + resp.status + ").");
       const merged = { ...json, lastSync: Date.now() };
       savingRef.current = true; await jset("wc26:results", merged, true); setActual(merged); savingRef.current = false;
       const got = (json.champion ? 1 : 0) + (json.groupOrder ? Object.keys(json.groupOrder).length : 0);
-      setSyncMsg(got ? "Updated from live data ✓" : "No confirmed results yet — the tournament starts June 11.");
-    } catch { savingRef.current = false; setSyncMsg("Couldn't reach live results just now — try again shortly."); }
+      setSyncMsg(got ? "Updated from live data ✓" : "No results to record yet — no group has played a match.");
+    } catch (e) { savingRef.current = false; setSyncMsg("Sync failed: " + (e && e.message ? e.message : String(e))); }
     setSyncing(false);
   };
   useEffect(() => {
