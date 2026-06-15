@@ -1,9 +1,8 @@
 // api/sync.js — Vercel serverless function.
-// Pulls live 2026 FIFA World Cup data from API-Football (api-sports.io) and returns
-// the outcomes object the app scores against. No Anthropic key / billing needed.
-//
-// Set API_FOOTBALL_KEY in your environment — a free token from dashboard.api-football.com
-// (Account -> API key). The World Cup is league=1, season=2026.
+// Holds the Anthropic API key (server-side only) and runs the live-results web search,
+// returning the parsed JSON outcomes object the app scores against.
+// Set ANTHROPIC_API_KEY in your environment — a FUNDED key from console.anthropic.com
+// (the account/org needs a credit balance, or calls fail with "credit balance too low").
 
 const GROUPS = {
   A: ["Mexico", "South Africa", "Korea Republic", "Czechia"],
@@ -20,110 +19,56 @@ const GROUPS = {
   L: ["England", "Croatia", "Ghana", "Panama"],
 };
 
-// --- team-name resolution: API-Football spellings -> the app's exact names ---
-const APP_TEAMS = Object.values(GROUPS).flat();
-const norm = (s) =>
-  (s || "").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, " ").trim();
-const APP_LOOKUP = {};
-for (const t of APP_TEAMS) APP_LOOKUP[norm(t)] = t;
-const ALIAS = {
-  "south korea": "Korea Republic",
-  "korea republic": "Korea Republic",
-  "turkey": "Türkiye",
-  "turkiye": "Türkiye",
-  "czech republic": "Czechia",
-  "usa": "United States",
-  "united states of america": "United States",
-  "congo dr": "DR Congo",
-  "dr congo": "DR Congo",
-  "democratic republic of congo": "DR Congo",
-  "cote d ivoire": "Ivory Coast",
-  "cabo verde": "Cape Verde",
-  "bosnia": "Bosnia and Herzegovina",
-};
-function resolveTeam(name) {
-  const n = norm(name);
-  if (!n) return null;
-  if (APP_LOOKUP[n]) return APP_LOOKUP[n];
-  if (ALIAS[n]) return ALIAS[n];
-  return null;
-}
+function buildPrompt() {
+  const groups = Object.keys(GROUPS).map((g) => `${g}: ${GROUPS[g].join(", ")}`).join("\n");
+  return `Find 2026 FIFA World Cup results and current standings using web search. Today is ${new Date().toDateString()}.
 
-async function af(path, key) {
-  const r = await fetch("https://v3.football.api-sports.io" + path, { headers: { "x-apisports-key": key } });
-  const j = await r.json();
-  if (j && j.errors && ((Array.isArray(j.errors) && j.errors.length) || (!Array.isArray(j.errors) && Object.keys(j.errors).length))) {
-    const msg = Array.isArray(j.errors) ? j.errors.join("; ") : Object.values(j.errors).join("; ");
-    if (msg) throw new Error("API-Football: " + msg);
-  }
-  return j;
+Groups:
+${groups}
+
+Respond with ONLY this JSON (no markdown, no commentary):
+{
+ "groupOrder": {"A":["current 1st","current 2nd","current 3rd","current 4th"]},
+ "thirds": ["the third-placed teams that have OFFICIALLY qualified to the Round of 32 (only once the group stage is complete)"],
+ "reachedR16": ["teams that have officially won their Round of 32 match"],
+ "reachedQF": ["the teams officially in the quarter-finals"],
+ "reachedSF": ["the teams officially in the semi-finals"],
+ "finalists": ["the teams officially in the final"],
+ "champion": "the World Cup winner once decided",
+ "provisional": true
+}
+Rules:
+- groupOrder: give the CURRENT standings of every group that has played at least one match, ordering all four teams best-to-worst by the official ranking (points, then goal difference, then goals scored). Include groups even if they are NOT finished. Omit only groups with no matches played yet.
+- Use the exact team names from the groups list above.
+- "provisional": true while the tournament is in progress (group standings not yet final, or no champion); false only once the champion is decided.
+- If no matches have been played at all, return {"provisional": true}.`;
 }
 
 export default async function handler(req, res) {
   if (req.method !== "POST") { res.status(405).json({ error: "Use POST" }); return; }
-  const key = process.env.API_FOOTBALL_KEY;
-  if (!key) { res.status(500).json({ error: "Missing API_FOOTBALL_KEY environment variable" }); return; }
-  const LEAGUE = 1, SEASON = 2026;
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) { res.status(500).json({ error: "Missing ANTHROPIC_API_KEY environment variable" }); return; }
   try {
-    const out = { provisional: true };
-
-    // ---- current group standings ----
-    const st = await af(`/standings?league=${LEAGUE}&season=${SEASON}`, key);
-    const groupsArr = ((((st.response || [])[0] || {}).league || {}).standings) || [];
-    const groupOrder = {};
-    for (const grp of groupsArr) {
-      if (!Array.isArray(grp) || !grp.length) continue;
-      const label = String(grp[0].group || "").replace(/group/i, "").trim().toUpperCase();
-      if (!label) continue;
-      const ordered = grp.slice().sort((a, b) => (a.rank || 99) - (b.rank || 99))
-        .map((row) => resolveTeam(row.team && row.team.name)).filter(Boolean);
-      if (ordered.length) groupOrder[label] = ordered;
-    }
-    if (Object.keys(groupOrder).length) out.groupOrder = groupOrder;
-
-    // ---- knockout progression from fixtures ----
-    const fx = await af(`/fixtures?league=${LEAGUE}&season=${SEASON}`, key);
-    const fixtures = fx.response || [];
-    const roundOf = (f) => String((f.league && f.league.round) || "").toLowerCase();
-    const finished = (f) => ["FT", "AET", "PEN"].includes(String(f.fixture?.status?.short || "").toUpperCase());
-    const winnerOf = (f) => {
-      const h = f.teams && f.teams.home, a = f.teams && f.teams.away;
-      if (h && h.winner) return resolveTeam(h.name);
-      if (a && a.winner) return resolveTeam(a.name);
-      return null;
-    };
-    const teamsIn = (f) => [resolveTeam(f.teams?.home?.name), resolveTeam(f.teams?.away?.name)].filter(Boolean);
-    const winnersWhere = (test) => fixtures.filter((f) => test(roundOf(f)) && finished(f)).map(winnerOf).filter(Boolean);
-    const participantsWhere = (test) => { const s = new Set(); fixtures.filter((f) => test(roundOf(f))).forEach((f) => teamsIn(f).forEach((t) => s.add(t))); return [...s]; };
-
-    const r16 = winnersWhere((r) => r.includes("round of 32"));
-    const qf = winnersWhere((r) => r.includes("round of 16"));
-    const sf = winnersWhere((r) => r.includes("quarter"));
-    const isFinal = (r) => r.includes("final") && !r.includes("semi") && !r.includes("quarter") && !r.includes("3rd") && !r.includes("third");
-    const finalists = participantsWhere(isFinal);
-    let champion = "";
-    fixtures.filter((f) => isFinal(roundOf(f)) && finished(f)).forEach((f) => { const w = winnerOf(f); if (w) champion = w; });
-
-    if (r16.length) out.reachedR16 = r16;
-    if (qf.length) out.reachedQF = qf;
-    if (sf.length) out.reachedSF = sf;
-    if (finalists.length) out.finalists = finalists;
-    if (champion) { out.champion = champion; out.provisional = false; }
-
-    // ---- qualified thirds: 3rd-placed teams that reached the Round of 32 ----
-    const r32Teams = new Set(participantsWhere((r) => r.includes("round of 32")));
-    if (r32Teams.size) {
-      const thirds = [];
-      for (const grp of groupsArr) {
-        const third = (grp || []).find((row) => row.rank === 3);
-        const t = third && resolveTeam(third.team && third.team.name);
-        if (t && r32Teams.has(t)) thirds.push(t);
-      }
-      if (thirds.length) out.thirds = thirds;
-    }
-
-    res.status(200).json(out);
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6", // update to a current model string from docs.claude.com if needed
+        max_tokens: 2000,
+        messages: [{ role: "user", content: buildPrompt() }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+      }),
+    });
+    const data = await r.json();
+    if (data && data.error) { res.status(500).json({ error: data.error.message || "Anthropic API error" }); return; }
+    const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+    let json = {};
+    try { json = JSON.parse(text.replace(/```json|```/g, "").trim()); } catch { json = {}; }
+    res.status(200).json(json);
   } catch (e) {
     res.status(500).json({ error: String(e && e.message ? e.message : e) });
   }
