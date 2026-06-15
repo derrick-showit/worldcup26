@@ -249,22 +249,27 @@ function Avatar({ player, size = 48 }) {
 
 function buildSyncPrompt() {
   const groups = GKEYS.map((g) => `${g}: ${GROUPS[g].join(", ")}`).join("\n");
-  return `Find official 2026 FIFA World Cup outcomes using web search. Today is ${new Date().toDateString()}.
+  return `Find 2026 FIFA World Cup results and current standings using web search. Today is ${new Date().toDateString()}.
 
 Groups:
 ${groups}
 
-Respond with ONLY this JSON (no markdown, no commentary). Include data ONLY where officially confirmed; otherwise omit the key or use an empty value:
+Respond with ONLY this JSON (no markdown, no commentary):
 {
- "groupOrder": {"A":["1st","2nd","3rd","4th"]},
- "thirds": ["the 8 third-placed teams that officially qualified to the Round of 32"],
- "reachedR16": ["the 16 teams that won their Round of 32 match"],
- "reachedQF": ["the 8 teams in the quarter-finals"],
- "reachedSF": ["the 4 teams in the semi-finals"],
- "finalists": ["the 2 teams in the final"],
- "champion": "the World Cup winner"
+ "groupOrder": {"A":["current 1st","current 2nd","current 3rd","current 4th"]},
+ "thirds": ["the third-placed teams that have OFFICIALLY qualified to the Round of 32 (only once the group stage is complete)"],
+ "reachedR16": ["teams that have officially won their Round of 32 match"],
+ "reachedQF": ["the teams officially in the quarter-finals"],
+ "reachedSF": ["the teams officially in the semi-finals"],
+ "finalists": ["the teams officially in the final"],
+ "champion": "the World Cup winner once decided",
+ "provisional": true
 }
-Use the exact team names from the groups list above. If the tournament has not produced a result yet, return {}.`;
+Rules:
+- groupOrder: give the CURRENT standings of every group that has played at least one match, ordering all four teams best-to-worst by the official ranking (points, then goal difference, then goals scored). Include groups even if they are NOT finished. Omit only groups with no matches played yet.
+- Use the exact team names from the groups list above.
+- "provisional": true while the tournament is in progress (group standings not yet final, or no champion); false only once the champion is decided.
+- If no matches have been played at all, return {"provisional": true}.`;
 }
 
 /* ============================================================ */
@@ -573,6 +578,11 @@ export default function App() {
                 <span style={S.chip}>{standings.length} players</span>
                 <button onClick={refreshBoard} style={{ fontSize: 12.5, color: C.muted, background: "none", border: "1px solid " + C.line, padding: "5px 10px", borderRadius: 8, cursor: "pointer" }}>↻ Refresh</button>
               </div>
+              {(actual.provisional || (actual.groupOrder && Object.keys(actual.groupOrder).length > 0)) && !actual.champion && (
+                <div style={{ ...S.card, marginBottom: 8, padding: "9px 12px", fontSize: 12.5, color: C.muted, display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <span>📊</span><span><strong style={{ color: C.ink }}>Provisional</strong> — group stage in progress. Points reflect current group standings and will shift as matches are played, firming up once each group finishes.</span>
+                </div>
+              )}
               <div style={{ ...S.card, padding: 0, overflow: "hidden" }}>
                 {standings.length === 0 && <div style={{ padding: 20, color: C.muted }}>No players yet.</div>}
                 {standings.map((row, i) => {

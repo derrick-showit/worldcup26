@@ -19,22 +19,27 @@ const GROUPS = {
 
 function buildPrompt() {
   const groups = Object.keys(GROUPS).map((g) => `${g}: ${GROUPS[g].join(", ")}`).join("\n");
-  return `Find official 2026 FIFA World Cup outcomes using web search. Today is ${new Date().toDateString()}.
+  return `Find 2026 FIFA World Cup results and current standings using web search. Today is ${new Date().toDateString()}.
 
 Groups:
 ${groups}
 
-Respond with ONLY this JSON (no markdown, no commentary). Include data ONLY where officially confirmed; otherwise omit the key or use an empty value:
+Respond with ONLY this JSON (no markdown, no commentary):
 {
- "groupOrder": {"A":["1st","2nd","3rd","4th"]},
- "thirds": ["the 8 third-placed teams that officially qualified to the Round of 32"],
- "reachedR16": ["the 16 teams that won their Round of 32 match"],
- "reachedQF": ["the 8 teams in the quarter-finals"],
- "reachedSF": ["the 4 teams in the semi-finals"],
- "finalists": ["the 2 teams in the final"],
- "champion": "the World Cup winner"
+ "groupOrder": {"A":["current 1st","current 2nd","current 3rd","current 4th"]},
+ "thirds": ["the third-placed teams that have OFFICIALLY qualified to the Round of 32 (only once the group stage is complete)"],
+ "reachedR16": ["teams that have officially won their Round of 32 match"],
+ "reachedQF": ["the teams officially in the quarter-finals"],
+ "reachedSF": ["the teams officially in the semi-finals"],
+ "finalists": ["the teams officially in the final"],
+ "champion": "the World Cup winner once decided",
+ "provisional": true
 }
-Use the exact team names from the groups list above. If the tournament has not produced a result yet, return {}.`;
+Rules:
+- groupOrder: give the CURRENT standings of every group that has played at least one match, ordering all four teams best-to-worst by the official ranking (points, then goal difference, then goals scored). Include groups even if they are NOT finished. Omit only groups with no matches played yet.
+- Use the exact team names from the groups list above.
+- "provisional": true while the tournament is in progress (group standings not yet final, or no champion); false only once the champion is decided.
+- If no matches have been played at all, return {"provisional": true}.`;
 }
 
 export default async function handler(req, res) {
