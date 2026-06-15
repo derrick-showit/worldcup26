@@ -55,7 +55,7 @@ export default async function handler(req, res) {
       headers: {
         "content-type": "application/json",
         "x-api-key": key,
-        "anthropic-version": "2025-01-01",
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6", // update to a current model string from docs.claude.com if needed
