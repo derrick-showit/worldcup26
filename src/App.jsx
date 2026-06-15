@@ -383,7 +383,7 @@ export default function App() {
       const merged = { ...json, lastSync: Date.now() };
       savingRef.current = true; await jset("wc26:results", merged, true); setActual(merged); savingRef.current = false;
       const got = (json.champion ? 1 : 0) + (json.groupOrder ? Object.keys(json.groupOrder).length : 0);
-      setSyncMsg(got ? "Updated from live data ✓" : "No results to record yet — no group has played a match.");
+      setSyncMsg(got ? "Updated from live data ✓" : ("No results recorded yet" + (json._debug ? " — source said: " + json._debug : ".")));
     } catch (e) { savingRef.current = false; setSyncMsg("Sync failed: " + (e && e.message ? e.message : String(e))); }
     setSyncing(false);
   };

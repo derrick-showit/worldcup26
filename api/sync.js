@@ -41,7 +41,8 @@ Rules:
 - groupOrder: give the CURRENT standings of every group that has played at least one match, ordering all four teams best-to-worst by the official ranking (points, then goal difference, then goals scored). Include groups even if they are NOT finished. Omit only groups with no matches played yet.
 - Use the exact team names from the groups list above.
 - "provisional": true while the tournament is in progress (group standings not yet final, or no champion); false only once the champion is decided.
-- If no matches have been played at all, return {"provisional": true}.`;
+- If no matches have been played at all, return {"provisional": true}.
+- Output ONLY the JSON object — no explanation or any text before or after it.`;
 }
 
 export default async function handler(req, res) {
@@ -54,20 +55,34 @@ export default async function handler(req, res) {
       headers: {
         "content-type": "application/json",
         "x-api-key": key,
-        "anthropic-version": "2023-06-01",
+        "anthropic-version": "2025-01-01",
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6", // update to a current model string from docs.claude.com if needed
-        max_tokens: 2000,
+        max_tokens: 3000,
         messages: [{ role: "user", content: buildPrompt() }],
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        tools: [{ type: "web_search_20260209", name: "web_search" }],
       }),
     });
     const data = await r.json();
     if (data && data.error) { res.status(500).json({ error: data.error.message || "Anthropic API error" }); return; }
-    const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
-    let json = {};
-    try { json = JSON.parse(text.replace(/```json|```/g, "").trim()); } catch { json = {}; }
+    const blocks = (data.content || []).filter((b) => b.type === "text").map((b) => b.text || "");
+    const tryParse = (raw) => {
+      if (!raw) return null;
+      const t = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+      try { return JSON.parse(t); } catch (x) {}
+      const i = t.indexOf("{"), j = t.lastIndexOf("}");
+      if (i >= 0 && j > i) { try { return JSON.parse(t.slice(i, j + 1)); } catch (x) {} }
+      return null;
+    };
+    let json = null;
+    for (const cand of [blocks[blocks.length - 1], blocks.join("\n")]) { json = tryParse(cand); if (json) break; }
+    const hasData = json && (json.groupOrder || json.champion || json.thirds || json.reachedR16);
+    if (!hasData) {
+      const snip = blocks.join(" ").replace(/\s+/g, " ").trim().slice(0, 400);
+      res.status(200).json({ provisional: true, _debug: snip || "(the model returned no text — web search may have found nothing)" });
+      return;
+    }
     res.status(200).json(json);
   } catch (e) {
     res.status(500).json({ error: String(e && e.message ? e.message : e) });
