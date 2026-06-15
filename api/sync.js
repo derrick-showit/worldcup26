@@ -79,9 +79,9 @@ export default async function handler(req, res) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 8000,
-        system: "Return ONLY JSON. No narration. Search once, then output the JSON.",
+        model: "claude-sonnet-4-6",
+        max_tokens: 10000,
+        system: "You are a sports data API. Do one web search for current FIFA World Cup 2026 standings, then immediately return the requested JSON. No commentary, no explanation, no extra searches. One search, then JSON.",
         messages: [{ role: "user", content: buildPrompt() }],
         tools: [{ type: "web_search_20250305", name: "web_search" }],
       }),
@@ -102,7 +102,9 @@ export default async function handler(req, res) {
     const hasData = json && (json.groupOrder || json.champion || json.thirds || json.reachedR16);
     if (!hasData) {
       const snip = blocks.join(" ").replace(/\s+/g, " ").trim().slice(0, 400);
-      res.status(200).json({ provisional: true, _debug: snip || "(no text blocks)" });
+      const types = (data.content || []).map(b => b.type).join(",");
+      const stopReason = data.stop_reason || "unknown";
+      res.status(200).json({ provisional: true, _debug: snip || `(no text blocks — content types: ${types}, stop: ${stopReason})` });
       return;
     }
 
