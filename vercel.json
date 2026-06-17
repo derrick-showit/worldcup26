@@ -2,6 +2,9 @@
   "functions": {
     "api/sync.js": {
       "maxDuration": 120
+    },
+    "api/highlights.js": {
+      "maxDuration": 15
     }
   }
 }

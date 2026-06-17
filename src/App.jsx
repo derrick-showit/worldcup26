@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "./storage.js";
+import { HubWidget, LivescoreWidget, StandingsWidget } from './widgets/WorldCupWidgets';
 
 /* ============================================================
    OFFICE BRACKET CHALLENGE — 2026 FIFA WORLD CUP
@@ -8,10 +9,10 @@ import { supabase } from "./storage.js";
    ============================================================ */
 
 const FLAGS = {
-  Mexico: "🇲🇽", "South Africa": "🇿🇦", "Korea Republic": "🇰🇷", Czechia: "🇨🇿",
+  Mexico: "🇲🇽", "South Africa": "🇿🇦", "South Korea": "🇰🇷", Czechia: "🇨🇿",
   Canada: "🇨🇦", "Bosnia and Herzegovina": "🇧🇦", Qatar: "🇶🇦", Switzerland: "🇨🇭",
   Brazil: "🇧🇷", Morocco: "🇲🇦", Haiti: "🇭🇹", Scotland: "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
-  "United States": "🇺🇸", Paraguay: "🇵🇾", Australia: "🇦🇺", "Türkiye": "🇹🇷",
+  "United States": "🇺🇸", Paraguay: "🇵🇾", Australia: "🇦🇺", "Turkey": "🇹🇷",
   Germany: "🇩🇪", "Curaçao": "🇨🇼", "Ivory Coast": "🇨🇮", Ecuador: "🇪🇨",
   Netherlands: "🇳🇱", Japan: "🇯🇵", Sweden: "🇸🇪", Tunisia: "🇹🇳",
   Belgium: "🇧🇪", Egypt: "🇪🇬", Iran: "🇮🇷", "New Zealand": "🇳🇿",
@@ -23,10 +24,10 @@ const FLAGS = {
 };
 const flag = (t) => FLAGS[t] || "⚽";
 const SHORT = {
-  Mexico: "MEX", "South Africa": "RSA", "Korea Republic": "KOR", Czechia: "CZE",
+  Mexico: "MEX", "South Africa": "RSA", "South Korea": "KOR", Czechia: "CZE",
   Canada: "CAN", "Bosnia and Herzegovina": "BIH", Qatar: "QAT", Switzerland: "SUI",
   Brazil: "BRA", Morocco: "MAR", Haiti: "HAI", Scotland: "SCO",
-  "United States": "USA", Paraguay: "PAR", Australia: "AUS", "Türkiye": "TUR",
+  "United States": "USA", Paraguay: "PAR", Australia: "AUS", "Turkey": "TUR",
   Germany: "GER", "Curaçao": "CUW", "Ivory Coast": "CIV", Ecuador: "ECU",
   Netherlands: "NED", Japan: "JPN", Sweden: "SWE", Tunisia: "TUN",
   Belgium: "BEL", Egypt: "EGY", Iran: "IRN", "New Zealand": "NZL",
@@ -39,10 +40,10 @@ const SHORT = {
 const ALL_TEAMS = Object.keys(FLAGS).sort();
 
 const GROUPS = {
-  A: ["Mexico", "South Africa", "Korea Republic", "Czechia"],
+  A: ["Mexico", "South Africa", "South Korea", "Czechia"],
   B: ["Canada", "Bosnia and Herzegovina", "Qatar", "Switzerland"],
   C: ["Brazil", "Morocco", "Haiti", "Scotland"],
-  D: ["United States", "Paraguay", "Australia", "Türkiye"],
+  D: ["United States", "Paraguay", "Australia", "Turkey"],
   E: ["Germany", "Curaçao", "Ivory Coast", "Ecuador"],
   F: ["Netherlands", "Japan", "Sweden", "Tunisia"],
   G: ["Belgium", "Egypt", "Iran", "New Zealand"],
@@ -380,18 +381,28 @@ export default function App() {
       try { json = await resp.json(); } catch { throw new Error("The /api/sync function returned a non-JSON response (HTTP " + resp.status + "). It may not be deployed — check that the api/ folder shipped and you redeployed."); }
       if (json && json.error) throw new Error(json.error);
       if (!resp.ok) throw new Error("Sync request failed (HTTP " + resp.status + ").");
-      const merged = { ...json, lastSync: Date.now() };
+      // Merge with existing results — never remove groups we already have
+      const prev = await jget("wc26:results", true, {});
+      const mergedGroups = { ...(prev.groupOrder || {}) };
+      if (json.groupOrder) for (const g of Object.keys(json.groupOrder)) {
+        const incoming = json.groupOrder[g];
+        if (Array.isArray(incoming) && incoming.length === 4 && incoming[0]) mergedGroups[g] = incoming;
+      }
+      const merged = {
+        ...prev,
+        ...json,
+        groupOrder: mergedGroups,
+        lastSync: Date.now(),
+      };
+      delete merged._debug; delete merged._blocks;
       savingRef.current = true; await jset("wc26:results", merged, true); setActual(merged); savingRef.current = false;
       const got = (json.champion ? 1 : 0) + (json.groupOrder ? Object.keys(json.groupOrder).length : 0);
       setSyncMsg(got ? "Updated from live data ✓" : ("No results recorded yet" + (json._debug ? " — source said: " + json._debug : ".")));
     } catch (e) { savingRef.current = false; setSyncMsg("Sync failed: " + (e && e.message ? e.message : String(e))); }
     setSyncing(false);
   };
-  useEffect(() => {
-    if (!me || didAutoSync.current) return; didAutoSync.current = true;
-    (async () => { const cur = await jget("wc26:results", true, {}); const now = Date.now(); const started = now >= BRACKET_LOCK; const stale = !cur.lastSync || now - cur.lastSync > 600000; if (started && stale) syncResults(true); })();
-    /* eslint-disable-next-line */
-  }, [me]);
+  // No auto-sync — results only update when an admin clicks the sync button.
+  // This prevents inconsistent API results from overwriting stable data.
 
   /* join / rejoin */
   const pin6 = (v) => v.replace(/\D/g, "").slice(0, 6);
@@ -785,32 +796,43 @@ function KnockoutStep({ bracket, resolved, koRound, setKoRound, pickWinner, lock
 /* ===================== TOURNAMENT (actual) ===================== */
 function TournamentView({ actual, syncing, syncMsg, onSync }) {
   const a = actual || {};
-  const winners = a.groupOrder ? GKEYS.filter((g) => a.groupOrder[g]).map((g) => ({ g, team: a.groupOrder[g][0] })) : [];
+  const [liveTab, setLiveTab] = useState("hub");
   return (
     <div>
-      <div style={{ ...S.card, marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontWeight: 700, fontSize: 13.5 }}>⚡ Automatic results</div>
-          <div style={{ fontSize: 11.5, color: C.muted }}>{syncMsg || (a.lastSync ? "Last checked " + ago(a.lastSync) + " ago" : "Pulls verified outcomes from live data.")}</div>
+      {/* Admin sync strip — only show last-sync info, widgets handle live data */}
+      <div style={{ ...S.card, marginBottom: 14, padding: "9px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12, color: C.muted }}>
+          {syncMsg || (a.lastSync ? "Results last synced " + ago(a.lastSync) + " ago" : "Live widget data is independent — use sync to update bracket scoring.")}
         </div>
-        <button onClick={onSync} disabled={syncing} style={{ padding: "9px 14px", borderRadius: 10, border: "none", background: syncing ? C.chip : C.green, color: syncing ? C.muted : "#fff", fontWeight: 700, fontSize: 13, cursor: syncing ? "default" : "pointer" }}>{syncing ? "Syncing…" : "Sync now"}</button>
+        <button onClick={onSync} disabled={syncing} style={{ padding: "7px 12px", borderRadius: 8, border: "none", background: syncing ? C.chip : C.ink, color: syncing ? C.muted : C.paper, fontWeight: 700, fontSize: 12, cursor: syncing ? "default" : "pointer" }}>
+          {syncing ? "Syncing…" : "Sync bracket scoring"}
+        </button>
       </div>
+
+      {/* Champion banner if decided */}
       {a.champion && (
         <div style={{ ...S.card, marginBottom: 14, textAlign: "center", background: C.blue, color: "#fff", borderColor: C.blue }}>
           <div style={{ fontSize: 12, letterSpacing: ".08em", opacity: .85 }}>WORLD CUP 2026 CHAMPION</div>
           <div style={{ ...S.display, fontSize: 30, fontWeight: 700, marginTop: 4 }}>{flag(a.champion)} {a.champion}</div>
         </div>
       )}
-      {a.finalists && a.finalists.length === 2 && <div style={{ ...S.card, marginBottom: 14, textAlign: "center" }}><span style={S.chip}>Finalists</span><div style={{ marginTop: 8, fontWeight: 700 }}>{flag(a.finalists[0])} {a.finalists[0]} &nbsp;v&nbsp; {flag(a.finalists[1])} {a.finalists[1]}</div></div>}
-      <span style={S.chip}>Group winners</span>
-      <div style={{ ...S.card, padding: 0, overflow: "hidden", marginTop: 10 }}>
-        {winners.length === 0 ? <div style={{ padding: 18, color: C.muted, fontSize: 14 }}>No group results confirmed yet — the tournament starts June 11.</div> :
-          winners.map(({ g, team }, i) => (
-            <div key={g} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 15px", borderTop: i ? "1px solid " + C.line : "none" }}>
-              <span style={{ width: 20, fontWeight: 700, color: C.muted }}>{g}</span><span style={{ fontSize: 18 }}>{flag(team)}</span><span style={{ fontWeight: 600 }}>{team}</span>
-            </div>
-          ))}
+
+      {/* Live widget tabs */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, overflowX: "auto" }} className="hidescroll">
+        {[["hub","Hub"],["live","Livescore"],["standings","Standings"]].map(([k,l]) => (
+          <button key={k} onClick={() => setLiveTab(k)} style={{
+            flex: "1 0 auto", padding: "9px 10px", borderRadius: 9, cursor: "pointer",
+            fontSize: 13, fontWeight: liveTab === k ? 700 : 500,
+            border: "1px solid " + (liveTab === k ? C.ink : C.line),
+            background: liveTab === k ? C.ink : C.card,
+            color: liveTab === k ? C.paper : C.ink,
+          }}>{l}</button>
+        ))}
       </div>
+
+      {liveTab === "hub"      && <HubWidget />}
+      {liveTab === "live"     && <LivescoreWidget />}
+      {liveTab === "standings"&& <StandingsWidget />}
     </div>
   );
 }
