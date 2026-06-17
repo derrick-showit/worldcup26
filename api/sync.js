@@ -1,21 +1,6 @@
 // api/sync.js — Vercel serverless function.
-// Fetches live World Cup results from worldcup26.ir (free, no key needed).
-// Falls back to Anthropic web search if the free API is unavailable.
-
-const GROUPS = {
-  A: ["Mexico", "South Africa", "South Korea", "Czech Republic"],
-  B: ["Canada", "Bosnia and Herzegovina", "Qatar", "Switzerland"],
-  C: ["Brazil", "Morocco", "Haiti", "Scotland"],
-  D: ["United States", "Paraguay", "Australia", "Turkey"],
-  E: ["Germany", "Curaçao", "Ivory Coast", "Ecuador"],
-  F: ["Netherlands", "Japan", "Sweden", "Tunisia"],
-  G: ["Belgium", "Egypt", "Iran", "New Zealand"],
-  H: ["Spain", "Cape Verde", "Saudi Arabia", "Uruguay"],
-  I: ["France", "Senegal", "Iraq", "Norway"],
-  J: ["Argentina", "Algeria", "Austria", "Jordan"],
-  K: ["Portugal", "DR Congo", "Uzbekistan", "Colombia"],
-  L: ["England", "Croatia", "Ghana", "Panama"],
-};
+// Pulls bracket scoring data entirely from worldcup26.ir (free, no API key needed).
+// No Anthropic, no SerpApi, no external dependencies.
 
 const TEAM_BY_ID = {
   "1":"Mexico","2":"South Africa","3":"South Korea","4":"Czech Republic",
@@ -32,175 +17,121 @@ const TEAM_BY_ID = {
   "45":"England","46":"Croatia","47":"Ghana","48":"Panama",
 };
 
-// In-memory cache (warm Vercel instance)
+// In-memory cache — survives warm Vercel instances, resets on cold start
 let cached = null;
 let cachedAt = 0;
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes (tighter since it's free)
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-async function fetchFromFreeAPI() {
-  const [gamesRes, groupsRes] = await Promise.all([
-    fetch("https://worldcup26.ir/get/games",  { signal: AbortSignal.timeout(8000) }),
-    fetch("https://worldcup26.ir/get/groups", { signal: AbortSignal.timeout(8000) }),
-  ]);
+function teamName(game, side) {
+  // Prefer the name embedded in the game object, fall back to id map
+  const nameKey = side === "home" ? "home_team_name_en" : "away_team_name_en";
+  const idKey   = side === "home" ? "home_team_id"     : "away_team_id";
+  return game[nameKey] || TEAM_BY_ID[game[idKey]] || null;
+}
 
-  if (!gamesRes.ok || !groupsRes.ok) throw new Error("worldcup26.ir returned non-200");
+function winnerOf(game) {
+  const hs = parseInt(game.home_score);
+  const as = parseInt(game.away_score);
+  if (isNaN(hs) || isNaN(as)) return null;
+  return hs > as ? teamName(game, "home") : teamName(game, "away");
+}
 
-  const gamesData  = await gamesRes.json();
-  const groupsData = await groupsRes.json();
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Use POST" });
+    return;
+  }
 
-  const games  = gamesData.games  || [];
-  const groups = groupsData.groups || [];
+  // Serve from cache if still fresh
+  if (cached && Date.now() - cachedAt < CACHE_TTL) {
+    res.status(200).json(cached);
+    return;
+  }
 
-  // Build group order from standings (sorted by pts → gd → gf)
-  const groupOrder = {};
-  groups.forEach(grp => {
-    const sorted = [...grp.teams]
-      .sort((a, b) =>
+  try {
+    // Fetch games and group standings in parallel
+    const [gamesRes, groupsRes] = await Promise.all([
+      fetch("https://worldcup26.ir/get/games",  { signal: AbortSignal.timeout(10000) }),
+      fetch("https://worldcup26.ir/get/groups", { signal: AbortSignal.timeout(10000) }),
+    ]);
+
+    if (!gamesRes.ok)  throw new Error(`games endpoint: ${gamesRes.status}`);
+    if (!groupsRes.ok) throw new Error(`groups endpoint: ${groupsRes.status}`);
+
+    const { games  = [] } = await gamesRes.json();
+    const { groups = [] } = await groupsRes.json();
+
+    // ── Group standings ─────────────────────────────────────────
+    // Build groupOrder: { A: ["1st","2nd","3rd","4th"], B: [...], ... }
+    // Only include groups where at least one match has been played.
+    const groupOrder = {};
+    groups.forEach(grp => {
+      const hasPlayed = grp.teams.some(t => parseInt(t.mp) > 0);
+      if (!hasPlayed) return;
+
+      const sorted = [...grp.teams].sort((a, b) =>
         parseInt(b.pts) - parseInt(a.pts) ||
         parseInt(b.gd)  - parseInt(a.gd)  ||
         parseInt(b.gf)  - parseInt(a.gf)
       );
-    // Only include if at least one match played
-    if (sorted.some(t => parseInt(t.mp) > 0)) {
       groupOrder[grp.name] = sorted.map(t => TEAM_BY_ID[t.team_id] || `Team ${t.team_id}`);
-    }
-  });
+    });
 
-  // Third-place teams (position 3 in each group, only if group is complete — 3 matchdays played)
-  const thirds = [];
-  groups.forEach(grp => {
-    const allPlayed = grp.teams.every(t => parseInt(t.mp) === 3);
-    if (allPlayed && grp.teams.length >= 3) {
-      const sorted = [...grp.teams]
-        .sort((a, b) => parseInt(b.pts) - parseInt(a.pts) || parseInt(b.gd) - parseInt(a.gd));
-      const third = TEAM_BY_ID[sorted[2]?.team_id];
-      if (third) thirds.push(third);
-    }
-  });
+    // ── Best third-place teams ──────────────────────────────────
+    // Collected once all 3 group-stage matchdays are done per group.
+    const thirds = [];
+    groups.forEach(grp => {
+      const complete = grp.teams.every(t => parseInt(t.mp) === 3);
+      if (!complete) return;
+      const sorted = [...grp.teams].sort((a, b) =>
+        parseInt(b.pts) - parseInt(a.pts) || parseInt(b.gd) - parseInt(a.gd)
+      );
+      const thirdTeam = TEAM_BY_ID[sorted[2]?.team_id];
+      if (thirdTeam) thirds.push(thirdTeam);
+    });
 
-  // Knockout progression
-  const finished = games.filter(g => g.time_elapsed === "finished");
-  const roundTeams = (type) =>
-    finished
-      .filter(g => g.type === type)
-      .map(g => {
-        const hScore = parseInt(g.home_score);
-        const aScore = parseInt(g.away_score);
-        const winner = hScore > aScore
-          ? (g.home_team_name_en || TEAM_BY_ID[g.home_team_id])
-          : (g.away_team_name_en || TEAM_BY_ID[g.away_team_id]);
-        return winner;
-      })
-      .filter(Boolean);
+    // ── Knockout rounds ─────────────────────────────────────────
+    const finished = games.filter(g => g.time_elapsed === "finished");
 
-  const reachedR16    = roundTeams("r32");
-  const reachedQF     = roundTeams("r16");
-  const reachedSF     = roundTeams("qf");
-  const finalistsRaw  = roundTeams("sf");
-  const championGames = finished.filter(g => g.type === "final");
-  let champion = null;
-  if (championGames.length > 0) {
-    const cg = championGames[0];
-    const hs = parseInt(cg.home_score), as_ = parseInt(cg.away_score);
-    champion = hs > as_
-      ? (cg.home_team_name_en || TEAM_BY_ID[cg.home_team_id])
-      : (cg.away_team_name_en || TEAM_BY_ID[cg.away_team_id]);
-  }
+    // Winners of each round become the teams that "reached" the next round
+    const winnersOf = (roundType) =>
+      finished
+        .filter(g => g.type === roundType)
+        .map(winnerOf)
+        .filter(Boolean);
 
-  const provisional = !champion;
+    const reachedR16  = winnersOf("r32");   // winners of R32 reached R16
+    const reachedQF   = winnersOf("r16");   // winners of R16 reached QF
+    const reachedSF   = winnersOf("qf");    // winners of QF reached SF
+    const finalists   = winnersOf("sf");    // winners of SF reached Final
 
-  return {
-    groupOrder,
-    thirds: thirds.length > 0 ? thirds : undefined,
-    reachedR16: reachedR16.length > 0 ? reachedR16 : undefined,
-    reachedQF:  reachedQF.length  > 0 ? reachedQF  : undefined,
-    reachedSF:  reachedSF.length  > 0 ? reachedSF  : undefined,
-    finalists:  finalistsRaw.length > 0 ? finalistsRaw : undefined,
-    champion:   champion || undefined,
-    provisional,
-    _source: "worldcup26.ir",
-  };
-}
+    // Champion: winner of the final
+    const finalGame = finished.find(g => g.type === "final");
+    const champion  = finalGame ? winnerOf(finalGame) : null;
 
-// Fallback: use Anthropic web search (original approach)
-async function fetchFromAI(apiKey) {
-  const gkeys = Object.keys(GROUPS);
-  const groupsList = gkeys.map(g => `${g}: ${GROUPS[g].join(", ")}`).join("\n");
-  const prompt = `Search for "2026 FIFA World Cup group standings results" to find current standings. Today is ${new Date().toDateString()}.
+    const result = {
+      groupOrder,
+      thirds:    thirds.length    ? thirds    : undefined,
+      reachedR16: reachedR16.length ? reachedR16 : undefined,
+      reachedQF:  reachedQF.length  ? reachedQF  : undefined,
+      reachedSF:  reachedSF.length  ? reachedSF  : undefined,
+      finalists:  finalists.length  ? finalists  : undefined,
+      champion:   champion          || undefined,
+      provisional: !champion,
+      lastSync: new Date().toISOString(),
+      _source: "worldcup26.ir",
+    };
 
-Groups:
-${groupsList}
+    cached   = result;
+    cachedAt = Date.now();
+    res.status(200).json(result);
 
-Return ONLY this JSON (no markdown, no text):
-{"groupOrder":{"A":["1st","2nd","3rd","4th"]},"thirds":[],"reachedR16":[],"reachedQF":[],"reachedSF":[],"finalists":[],"champion":null,"provisional":true}
-
-- groupOrder: current standings for groups with at least one match played. All 4 teams, best to worst.
-- Use EXACT team names from the list above.
-- provisional: true until a champion is decided.
-- Output ONLY valid JSON.`;
-
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4000,
-      system: "You are a sports data API. Do one web search, then return the requested JSON only.",
-      messages: [{ role: "user", content: prompt }],
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
-    }),
-  });
-
-  const data = await r.json();
-  if (data.error) throw new Error(data.error.message);
-
-  const texts = (data.content || []).filter(b => b.type === "text").map(b => b.text);
-  for (const text of [texts[texts.length - 1], texts.join("\n")]) {
-    if (!text) continue;
-    const clean = text.replace(/```json/gi, "").replace(/```/g, "").trim();
-    try { return { ...JSON.parse(clean), _source: "anthropic" }; } catch {}
-    const i = clean.indexOf("{"), j = clean.lastIndexOf("}");
-    if (i >= 0 && j > i) try { return { ...JSON.parse(clean.slice(i, j + 1)), _source: "anthropic" }; } catch {}
-  }
-  throw new Error("Could not parse AI response");
-}
-
-export default async function handler(req, res) {
-  if (req.method !== "POST") { res.status(405).json({ error: "Use POST" }); return; }
-
-  // Serve cache if fresh
-  if (cached && (Date.now() - cachedAt < CACHE_TTL)) {
-    res.status(200).json(cached); return;
-  }
-
-  let result = null;
-
-  // Try free API first
-  try {
-    result = await fetchFromFreeAPI();
-  } catch (e) {
-    console.warn("worldcup26.ir failed, falling back to AI:", e.message);
-  }
-
-  // Fallback to Anthropic web search
-  if (!result) {
-    const key = process.env.ANTHROPIC_API_KEY;
-    if (!key) {
-      res.status(500).json({ error: "worldcup26.ir is unavailable and ANTHROPIC_API_KEY is not set." });
-      return;
-    }
-    try {
-      result = await fetchFromAI(key);
-    } catch (e) {
-      res.status(500).json({ error: String(e.message) }); return;
+  } catch (err) {
+    // If worldcup26.ir is down, return last cached data with a warning rather than failing
+    if (cached) {
+      res.status(200).json({ ...cached, _stale: true, _error: err.message });
+    } else {
+      res.status(500).json({ error: `Sync failed: ${err.message}` });
     }
   }
-
-  cached   = result;
-  cachedAt = Date.now();
-  res.status(200).json(result);
 }

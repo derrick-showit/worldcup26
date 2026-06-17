@@ -48,8 +48,7 @@ VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
 
-`ANTHROPIC_API_KEY` is optional — only needed as a fallback for bracket
-scoring sync if the free data source is unavailable.
+No Anthropic API key is needed. Bracket scoring sync runs entirely off [worldcup26.ir](https://worldcup26.ir) — free, no signup required.
 
 ### 3. Run locally
 
