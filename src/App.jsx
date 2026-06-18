@@ -447,7 +447,7 @@ export default function App() {
   /* chat */
   const [chatInput, setChatInput] = useState("");
   const [asUpdate, setAsUpdate] = useState(false);
-  const sendChat = async () => { const text = chatInput.trim(); if (!text) return; const fresh = await jget("wc26:chat", true, []); const msg = { id: uid(), uid: me.id, name: me.name || me.username, color: me.color || C.green, text: text.slice(0, 500), ts: Date.now(), update: isAdmin && asUpdate }; const next = [...fresh, msg].slice(-200); await jset("wc26:chat", next, true); setChat(next); setChatInput(""); };
+  const sendChat = async (overrideText, gif, mentions) => { const text = (overrideText !== undefined ? overrideText : chatInput).trim(); if (!text && !gif) return; const fresh = await jget("wc26:chat", true, []); const msg = { id: uid(), uid: me.id, name: me.name || me.username, color: me.color || C.green, text: text.slice(0, 500), ts: Date.now(), update: isAdmin && asUpdate, ...(gif ? { gif } : {}), ...(mentions && mentions.length ? { mentions } : {}) }; const next = [...fresh, msg].slice(-200); await jset("wc26:chat", next, true); setChat(next); setChatInput(""); };
 
   /* bracket editing */
   const locked = Date.now() >= BRACKET_LOCK;
@@ -517,6 +517,9 @@ export default function App() {
   }
 
   const tabs = [["picks", "My Bracket"], ["standings", "Standings"], ["chat", "Banter"], ["profile", "Profile"]];
+  const mentionCount = chat.filter(m => m.uid !== me.id && m.mentions && m.mentions.includes(me.id)).length;
+  const [lastSeenMentions, setLastSeenMentions] = useState(0);
+  const unseenMentions = mentionCount - lastSeenMentions;
   const accent = me.color || C.green;
   const groupsDone = GKEYS.length;
   const thirdsDone = cleanThirds.length;
@@ -620,7 +623,8 @@ export default function App() {
         )}
 
         {/* ---------- CHAT ---------- */}
-        {tab === "chat" && <ChatPanel chat={chat} me={me} isAdmin={isAdmin} chatInput={chatInput} setChatInput={setChatInput} asUpdate={asUpdate} setAsUpdate={setAsUpdate} sendChat={sendChat} />}
+        {tab === "chat" && (() => { if (unseenMentions > 0) setLastSeenMentions(mentionCount); return null; })()}
+        {tab === "chat" && <ChatPanel chat={chat} me={me} roster={roster} isAdmin={isAdmin} chatInput={chatInput} setChatInput={setChatInput} asUpdate={asUpdate} setAsUpdate={setAsUpdate} sendChat={sendChat} />}
 
         {/* ---------- PROFILE ---------- */}
         {tab === "profile" && <Profile me={me} saveProfile={saveProfile} bracket={bracket} resolved={resolved} actual={actual} />}
@@ -838,47 +842,408 @@ function TournamentView({ actual, syncing, syncMsg, onSync }) {
 }
 
 /* ===================== CHAT ===================== */
-function ChatPanel({ chat, me, isAdmin, chatInput, setChatInput, asUpdate, setAsUpdate, sendChat }) {
-  const endRef = useRef(null);
-  useEffect(() => { if (endRef.current) endRef.current.scrollIntoView({ behavior: "smooth" }); }, [chat.length]);
+function ChatPanel({ chat, me, roster, isAdmin, chatInput, setChatInput, asUpdate, setAsUpdate, sendChat }) {
+  const endRef    = useRef(null);
+  const inputRef  = useRef(null);
+  const [showEmoji,   setShowEmoji  ] = useState(false);
+  const [showGif,     setShowGif    ] = useState(false);
+  const [gifQuery,    setGifQuery   ] = useState("");
+  const [gifs,        setGifs       ] = useState([]);
+  const [gifLoading,  setGifLoading ] = useState(false);
+  // @ mention state
+  const [mentionQuery,  setMentionQuery ] = useState(null); // null = closed, string = active query
+  const [mentionIndex,  setMentionIndex ] = useState(0);   // keyboard-selected index
+
+  // Tenor v1 API — free demo key, works out of the box.
+  // For production, register your own free key at https://tenor.com/developer/keyregistration
+  const TENOR_KEY = "LIVDSRZULELA";
+
+  useEffect(() => {
+    if (endRef.current) endRef.current.scrollIntoView({ behavior: "smooth" });
+  }, [chat.length]);
+
+  // ── GIF search ────────────────────────────────────────────────
+  useEffect(() => {
+    if (!showGif) return;
+    const q = gifQuery.trim() || "world cup soccer goal";
+    setGifLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const url = `https://api.tenor.com/v1/search?q=${encodeURIComponent(q)}&key=${TENOR_KEY}&limit=20&media_filter=minimal&contentfilter=low`;
+        const res = await fetch(url);
+        const data = await res.json();
+        setGifs((data.results || []).map(r => {
+          const media = r.media?.[0] || {};
+          return {
+            id:      r.id,
+            preview: media.nanogif?.url || media.tinygif?.url || media.gif?.url || "",
+            full:    media.gif?.url     || media.mediumgif?.url || media.tinygif?.url || "",
+            title:   r.content_description || "",
+          };
+        }).filter(g => g.preview));
+      } catch { setGifs([]); }
+      setGifLoading(false);
+    }, gifQuery ? 500 : 0);
+    return () => clearTimeout(t);
+  }, [gifQuery, showGif]);
+
+  const sendGif = async (gif) => { setShowGif(false); await sendChat("", gif); };
+  const insertEmoji = (emoji) => { setChatInput(prev => prev + emoji); setShowEmoji(false); inputRef.current?.focus(); };
+
+  // ── @ mention helpers ─────────────────────────────────────────
+  // Returns the @-query that the cursor is currently inside, or null
+  function getActiveMentionQuery(value, cursorPos) {
+    const before = value.slice(0, cursorPos);
+    const match  = before.match(/@(\w*)$/);
+    return match ? match[1] : null;
+  }
+
+  // Roster filtered by the current query (exclude self)
+  const mentionMatches = mentionQuery !== null
+    ? (roster || [])
+        .filter(u => u.id !== me.id)
+        .filter(u => {
+          const q = mentionQuery.toLowerCase();
+          if (!q) return true;
+          const name = (u.name || u.username || "").toLowerCase();
+          const user = (u.username || "").toLowerCase();
+          return name.startsWith(q) || user.startsWith(q);
+        })
+        .slice(0, 6)
+    : [];
+
+  // When user types in the input, detect @
+  const handleInputChange = (e) => {
+    const val = e.target.value;
+    setChatInput(val);
+    const q = getActiveMentionQuery(val, e.target.selectionStart);
+    if (q !== null) {
+      setMentionQuery(q);
+      setMentionIndex(0);
+    } else {
+      setMentionQuery(null);
+    }
+  };
+
+  // Complete the mention — replace the @partial with @Name
+  const completeMention = (user) => {
+    const cursorPos = inputRef.current?.selectionStart ?? chatInput.length;
+    const before    = chatInput.slice(0, cursorPos);
+    const after     = chatInput.slice(cursorPos);
+    // Replace the @query with @DisplayName
+    const displayName = (user.name || user.username).replace(/\s+/g, "");
+    const newBefore   = before.replace(/@(\w*)$/, `@${displayName} `);
+    const newVal      = newBefore + after;
+    setChatInput(newVal);
+    setMentionQuery(null);
+    // Put cursor after the inserted mention
+    setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+        inputRef.current.setSelectionRange(newBefore.length, newBefore.length);
+      }
+    }, 0);
+  };
+
+  // Extract mention IDs from text to store for notification lookup
+  function extractMentionIds(text) {
+    const names = (text.match(/@(\S+)/g) || []).map(m => m.slice(1).toLowerCase());
+    return (roster || [])
+      .filter(u => names.some(n => {
+        const uName = (u.name || u.username || "").replace(/\s+/g, "").toLowerCase();
+        const uUser = (u.username || "").toLowerCase();
+        return n === uName || n === uUser;
+      }))
+      .map(u => u.id);
+  }
+
+  // Keyboard navigation in mention dropdown
+  const handleKeyDown = (e) => {
+    if (mentionQuery !== null && mentionMatches.length > 0) {
+      if (e.key === "ArrowDown") { e.preventDefault(); setMentionIndex(i => (i + 1) % mentionMatches.length); return; }
+      if (e.key === "ArrowUp")   { e.preventDefault(); setMentionIndex(i => (i - 1 + mentionMatches.length) % mentionMatches.length); return; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); completeMention(mentionMatches[mentionIndex]); return; }
+      if (e.key === "Escape")    { setMentionQuery(null); return; }
+    }
+    if (e.key === "Enter" && !e.shiftKey && mentionQuery === null) {
+      sendMessage();
+    }
+  };
+
+  const sendMessage = () => {
+    const mentions = extractMentionIds(chatInput);
+    sendChat(undefined, undefined, mentions.length ? mentions : undefined);
+    setShowEmoji(false);
+    setShowGif(false);
+    setMentionQuery(null);
+  };
+
+  // ── Render text with highlighted @mentions ────────────────────
+  function renderText(text, isMine) {
+    if (!text || !text.includes("@")) return text;
+    const parts = text.split(/(@\S+)/g);
+    return parts.map((part, i) => {
+      if (!part.startsWith("@")) return part;
+      const nameRaw = part.slice(1).toLowerCase();
+      const tagged  = (roster || []).find(u => {
+        const uName = (u.name || u.username || "").replace(/\s+/g, "").toLowerCase();
+        const uUser = (u.username || "").toLowerCase();
+        return nameRaw === uName || nameRaw === uUser;
+      });
+      const isTaggedMe = tagged?.id === me.id;
+      return (
+        <span key={i} style={{
+          fontWeight: 700,
+          color: isTaggedMe
+            ? (isMine ? "#fff" : C.ink)
+            : (isMine ? "rgba(255,255,255,.85)" : C.muted),
+          background: isTaggedMe
+            ? (isMine ? "rgba(255,255,255,.25)" : C.chip)
+            : "transparent",
+          borderRadius: 4,
+          padding: isTaggedMe ? "0 3px" : 0,
+        }}>{part}</span>
+      );
+    });
+  }
+
+  // Emoji groups
+  const EMOJI_GROUPS = [
+    { label: "⚽ Football", emojis: ["⚽","🏆","🥅","🟨","🟥","📣","🎽","👟","🧤","🏟️","📺","🎯","💪","🔥","⚡","💥","🎉","🎊","👏","🙌"] },
+    { label: "😄 Faces",    emojis: ["😂","😭","😤","🤩","😱","🥹","😎","🤣","😅","🤦","🙈","💀","😬","🥴","🤯","😤","😠","🫡","🥶","😴"] },
+    { label: "👍 React",    emojis: ["👍","👎","❤️","💔","🔥","💯","🎯","✅","❌","⭐","🚀","💤","👀","🫶","🤌","💪","✊","🫠","🙏","👋"] },
+    { label: "🌎 Flags",    emojis: ["🇺🇸","🇧🇷","🇩🇪","🇫🇷","🇬🇧","🇦🇷","🇵🇹","🇪🇸","🇳🇱","🇯🇵","🇲🇽","🇦🇺","🇧🇪","🇨🇦","🇨🇷","🇸🇳","🇲🇦","🇨🇴","🇺🇾","🏴󠁧󠁢󠁥󠁮󠁧󠁿"] },
+  ];
+  const [emojiGroup, setEmojiGroup] = useState(0);
+
   return (
-    <div className="wc-fade">
+    <div className="wc-fade" style={{ position: "relative" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <span style={S.chip}>Group chat & live updates</span><span style={{ fontSize: 11.5, color: C.muted }}>● refreshes every 12s</span>
+        <span style={S.chip}>Group chat &amp; live updates</span>
+        <span style={{ fontSize: 11.5, color: C.muted }}>● refreshes every 12s</span>
       </div>
+
       <div style={{ ...S.card, padding: 0, height: 440, display: "flex", flexDirection: "column" }}>
+
+        {/* ── Message list ── */}
         <div className="hidescroll" style={{ flex: 1, overflowY: "auto", padding: "14px 14px 6px" }}>
-          {chat.length === 0 && <div style={{ color: C.muted, fontSize: 14, textAlign: "center", marginTop: 40 }}>No messages yet. Kick things off! 👋</div>}
+          {chat.length === 0 && (
+            <div style={{ color: C.muted, fontSize: 14, textAlign: "center", marginTop: 40 }}>
+              No messages yet. Kick things off! 👋
+            </div>
+          )}
           {chat.map((m) => {
             const mine = m.uid === me.id;
+            const mentionsMe = m.mentions && m.mentions.includes(me.id);
             if (m.update) return (
               <div key={m.id} style={{ margin: "10px 0", padding: "10px 12px", borderRadius: 12, background: C.chip, border: "1px solid " + C.gold }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.gold, letterSpacing: ".05em" }}>📣 UPDATE · {m.name} · {ago(m.ts)}</div>
-                <div style={{ fontSize: 14, marginTop: 3, fontWeight: 600 }}>{m.text}</div>
+                <div style={{ fontSize: 14, marginTop: 3, fontWeight: 600 }}>{renderText(m.text, false)}</div>
               </div>
             );
             return (
               <div key={m.id} style={{ display: "flex", justifyContent: mine ? "flex-end" : "flex-start", margin: "8px 0" }}>
-                <div style={{ maxWidth: "78%" }}>
-                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 2, textAlign: mine ? "right" : "left" }}><span style={{ color: m.color, fontWeight: 700 }}>{m.name}</span> · {ago(m.ts)}</div>
-                  <div style={{ padding: "8px 11px", borderRadius: 12, fontSize: 14, lineHeight: 1.35, background: mine ? C.green : C.chip, color: mine ? "#fff" : C.ink, borderTopRightRadius: mine ? 3 : 12, borderTopLeftRadius: mine ? 12 : 3, wordBreak: "break-word" }}>{m.text}</div>
+                <div style={{ maxWidth: "82%" }}>
+                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 2, textAlign: mine ? "right" : "left" }}>
+                    <span style={{ color: m.color, fontWeight: 700 }}>{m.name}</span> · {ago(m.ts)}
+                    {mentionsMe && !mine && (
+                      <span style={{ marginLeft: 5, fontSize: 10, fontWeight: 700, background: C.ink, color: C.paper, padding: "1px 5px", borderRadius: 4 }}>you</span>
+                    )}
+                  </div>
+                  {/* highlight entire bubble if tagged */}
+                  <div style={{
+                    borderRadius: 12,
+                    borderTopRightRadius: mine ? 3 : 12,
+                    borderTopLeftRadius:  mine ? 12 : 3,
+                    outline: mentionsMe && !mine ? "2px solid " + C.ink : "none",
+                    outlineOffset: 1,
+                    overflow: "hidden",
+                  }}>
+                    {/* GIF */}
+                    {m.gif && (
+                      <div>
+                        <img
+                          src={m.gif.full || m.gif.preview}
+                          alt={m.gif.title || "GIF"}
+                          style={{ display: "block", maxWidth: "100%", maxHeight: 200, objectFit: "cover" }}
+                          loading="lazy"
+                        />
+                        {m.text && (
+                          <div style={{ padding: "6px 11px 8px", fontSize: 13, background: mine ? C.green : C.chip, color: mine ? "#fff" : C.ink }}>
+                            {renderText(m.text, mine)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {/* Text */}
+                    {!m.gif && (
+                      <div style={{ padding: "8px 11px", fontSize: 14, lineHeight: 1.4, background: mine ? C.green : C.chip, color: mine ? "#fff" : C.ink, wordBreak: "break-word" }}>
+                        {renderText(m.text, mine)}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             );
           })}
           <div ref={endRef} />
         </div>
-        <div style={{ borderTop: "1px solid " + C.line, padding: 10 }}>
-          {isAdmin && <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.gold, fontWeight: 600, marginBottom: 8, cursor: "pointer" }}><input type="checkbox" checked={asUpdate} onChange={(e) => setAsUpdate(e.target.checked)} /> 📣 Post as match update</label>}
-          <div style={{ display: "flex", gap: 8 }}>
-            <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") sendChat(); }} placeholder="Say something…" style={{ ...S.input, padding: "10px 12px" }} />
-            <button onClick={sendChat} style={{ padding: "0 18px", borderRadius: 10, border: "none", background: C.green, color: "#fff", fontWeight: 700, cursor: "pointer" }}>Send</button>
+
+        {/* ── @ Mention dropdown ── */}
+        {mentionQuery !== null && mentionMatches.length > 0 && (
+          <div style={{
+            position: "absolute", bottom: 64, left: 0, right: 0, zIndex: 60,
+            background: C.card, border: "1px solid " + C.line,
+            borderRadius: 12, boxShadow: "0 8px 24px rgba(0,0,0,.13)",
+            overflow: "hidden", margin: "0 4px",
+          }}>
+            <div style={{ padding: "6px 12px 4px", fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: ".06em", background: C.chip }}>
+              TAG A PLAYER
+            </div>
+            {mentionMatches.map((user, i) => (
+              <button
+                key={user.id}
+                onMouseDown={e => { e.preventDefault(); completeMention(user); }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10,
+                  width: "100%", padding: "9px 14px", border: "none",
+                  background: i === mentionIndex ? C.chip : C.card,
+                  cursor: "pointer", textAlign: "left",
+                  borderTop: i ? "1px solid " + C.line : "none",
+                }}
+              >
+                {/* Avatar */}
+                <div style={{
+                  width: 30, height: 30, borderRadius: "50%", flexShrink: 0,
+                  background: user.color || C.ink,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: user.photo ? 0 : 13, fontWeight: 700, color: C.paper,
+                  overflow: "hidden",
+                }}>
+                  {user.photo
+                    ? <img src={user.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    : ((user.name || user.username || "?")[0] || "?").toUpperCase()
+                  }
+                </div>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>{user.name || user.username}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>@{user.username}</div>
+                </div>
+                {i === mentionIndex && (
+                  <div style={{ marginLeft: "auto", fontSize: 10, color: C.muted }}>↵ to select</div>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* ── Emoji picker ── */}
+        {showEmoji && (
+          <div style={{
+            position: "absolute", bottom: 64, left: 0, right: 0, zIndex: 50,
+            background: C.card, border: "1px solid " + C.line,
+            borderRadius: 14, boxShadow: "0 8px 32px rgba(0,0,0,.14)",
+            padding: 12, margin: "0 4px",
+          }}>
+            <div style={{ display: "flex", gap: 4, marginBottom: 10, overflowX: "auto" }}>
+              {EMOJI_GROUPS.map((g, i) => (
+                <button key={i} onClick={() => setEmojiGroup(i)} style={{
+                  padding: "4px 10px", borderRadius: 8, border: "none", cursor: "pointer",
+                  fontSize: 12, fontWeight: emojiGroup === i ? 700 : 400, flexShrink: 0,
+                  background: emojiGroup === i ? C.ink : C.chip,
+                  color: emojiGroup === i ? C.paper : C.ink,
+                }}>{g.label}</button>
+              ))}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: 2 }}>
+              {EMOJI_GROUPS[emojiGroup].emojis.map((e, i) => (
+                <button key={i} onClick={() => insertEmoji(e)} style={{
+                  fontSize: 22, padding: "4px 0", borderRadius: 6, border: "none",
+                  cursor: "pointer", background: "transparent", lineHeight: 1,
+                }}
+                onMouseEnter={el => el.currentTarget.style.background = C.chip}
+                onMouseLeave={el => el.currentTarget.style.background = "transparent"}
+                >{e}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── GIF picker ── */}
+        {showGif && (
+          <div style={{
+            position: "absolute", bottom: 64, left: 0, right: 0, zIndex: 50,
+            background: C.card, border: "1px solid " + C.line,
+            borderRadius: 14, boxShadow: "0 8px 32px rgba(0,0,0,.14)",
+            padding: 12, margin: "0 4px",
+          }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <input
+                autoFocus
+                value={gifQuery}
+                onChange={e => setGifQuery(e.target.value)}
+                placeholder="Search GIFs… (e.g. goal, celebration)"
+                style={{ ...S.input, flex: 1, padding: "8px 10px", fontSize: 13 }}
+              />
+              <button onClick={() => setShowGif(false)} style={{
+                padding: "0 12px", borderRadius: 8, border: "none",
+                background: C.chip, cursor: "pointer", fontSize: 18, color: C.muted,
+              }}>×</button>
+            </div>
+            {gifLoading && <div style={{ textAlign: "center", color: C.muted, padding: 20, fontSize: 13 }}>Searching…</div>}
+            {!gifLoading && gifs.length === 0 && <div style={{ textAlign: "center", color: C.muted, padding: 20, fontSize: 13 }}>No GIFs found</div>}
+            <div className="hidescroll" style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6, maxHeight: 240, overflowY: "auto" }}>
+              {gifs.map(gif => (
+                <button key={gif.id} onClick={() => sendGif(gif)} style={{
+                  padding: 0, border: "none", borderRadius: 8, overflow: "hidden",
+                  cursor: "pointer", background: C.chip, aspectRatio: "1.6",
+                }}>
+                  <img src={gif.preview} alt={gif.title} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} loading="lazy" />
+                </button>
+              ))}
+            </div>
+            {!gifLoading && gifs.length > 0 && (
+              <div style={{ fontSize: 10, color: C.muted, textAlign: "right", marginTop: 6 }}>Powered by Tenor</div>
+            )}
+          </div>
+        )}
+
+        {/* ── Input bar ── */}
+        <div style={{ borderTop: "1px solid " + C.line, padding: "8px 10px" }}>
+          {isAdmin && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.gold, fontWeight: 600, marginBottom: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={asUpdate} onChange={e => setAsUpdate(e.target.checked)} />
+              📣 Post as match update
+            </label>
+          )}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <button onClick={() => { setShowEmoji(s => !s); setShowGif(false); setMentionQuery(null); }} title="Emoji"
+              style={{ flexShrink: 0, width: 36, height: 36, borderRadius: 9, border: "none", background: showEmoji ? C.ink : C.chip, cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", color: showEmoji ? C.paper : C.ink }}
+            >😊</button>
+            <button onClick={() => { setShowGif(s => !s); setShowEmoji(false); setGifQuery(""); setMentionQuery(null); }} title="GIF"
+              style={{ flexShrink: 0, height: 36, padding: "0 10px", borderRadius: 9, border: "none", background: showGif ? C.ink : C.chip, cursor: "pointer", fontSize: 11, fontWeight: 800, letterSpacing: ".04em", color: showGif ? C.paper : C.ink }}
+            >GIF</button>
+            <div style={{ flex: 1, position: "relative" }}>
+              <input
+                ref={inputRef}
+                value={chatInput}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                onFocus={() => { setShowEmoji(false); setShowGif(false); }}
+                placeholder="Say something… or type @ to tag someone"
+                style={{ ...S.input, width: "100%", padding: "9px 12px", boxSizing: "border-box" }}
+              />
+            </div>
+            <button onClick={sendMessage}
+              style={{ flexShrink: 0, padding: "0 16px", height: 36, borderRadius: 9, border: "none", background: C.green, color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 13 }}
+            >Send</button>
           </div>
         </div>
       </div>
     </div>
   );
 }
+
 
 /* ===================== PROFILE ===================== */
 function Profile({ me, saveProfile, bracket, resolved, actual }) {
