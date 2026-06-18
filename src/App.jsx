@@ -520,6 +520,9 @@ export default function App() {
   const mentionCount = chat.filter(m => m.uid !== me.id && m.mentions && m.mentions.includes(me.id)).length;
   const [lastSeenMentions, setLastSeenMentions] = useState(0);
   const unseenMentions = mentionCount - lastSeenMentions;
+  useEffect(() => {
+    if (tab === "chat" && unseenMentions > 0) setLastSeenMentions(mentionCount);
+  }, [tab, mentionCount]);
   const accent = me.color || C.green;
   const groupsDone = GKEYS.length;
   const thirdsDone = cleanThirds.length;
@@ -542,7 +545,14 @@ export default function App() {
         </div>
 
         <div className="hidescroll" style={{ display: "flex", gap: 7, marginBottom: 18, position: "sticky", top: 0, background: C.paper, padding: "8px 0", zIndex: 5, overflowX: "auto" }}>
-          {tabs.map(([k, label]) => (<button key={k} style={{ ...S.btn(tab === k), flex: "1 0 auto", minWidth: 84 }} onClick={() => setTab(k)}>{label}</button>))}
+          {tabs.map(([k, label]) => (
+            <button key={k} style={{ ...S.btn(tab === k), flex: "1 0 auto", minWidth: 84, position: "relative" }} onClick={() => setTab(k)}>
+              {label}
+              {k === "chat" && unseenMentions > 0 && tab !== "chat" && (
+                <span style={{ position: "absolute", top: 4, right: 4, minWidth: 15, height: 15, borderRadius: 8, background: C.ink, color: C.paper, fontSize: 9, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 3px" }}>{unseenMentions}</span>
+              )}
+            </button>
+          ))}
         </div>
 
         {/* ---------- MY BRACKET ---------- */}
@@ -623,7 +633,6 @@ export default function App() {
         )}
 
         {/* ---------- CHAT ---------- */}
-        {tab === "chat" && (() => { if (unseenMentions > 0) setLastSeenMentions(mentionCount); return null; })()}
         {tab === "chat" && <ChatPanel chat={chat} me={me} roster={roster} isAdmin={isAdmin} chatInput={chatInput} setChatInput={setChatInput} asUpdate={asUpdate} setAsUpdate={setAsUpdate} sendChat={sendChat} />}
 
         {/* ---------- PROFILE ---------- */}
