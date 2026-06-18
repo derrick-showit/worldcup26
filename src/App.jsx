@@ -447,6 +447,10 @@ export default function App() {
   /* chat */
   const [chatInput, setChatInput] = useState("");
   const [asUpdate, setAsUpdate] = useState(false);
+  const [lastSeenMentions, setLastSeenMentions] = useState(0);
+  useEffect(() => {
+    if (tab === "chat") setLastSeenMentions(c => Math.max(c, chat.filter(m => m.uid !== (me?.id) && m.mentions?.includes(me?.id)).length));
+  }, [tab, chat]);
   const sendChat = async (overrideText, gif, mentions) => { const text = (overrideText !== undefined ? overrideText : chatInput).trim(); if (!text && !gif) return; const fresh = await jget("wc26:chat", true, []); const msg = { id: uid(), uid: me.id, name: me.name || me.username, color: me.color || C.green, text: text.slice(0, 500), ts: Date.now(), update: isAdmin && asUpdate, ...(gif ? { gif } : {}), ...(mentions && mentions.length ? { mentions } : {}) }; const next = [...fresh, msg].slice(-200); await jset("wc26:chat", next, true); setChat(next); setChatInput(""); };
 
   /* bracket editing */
@@ -517,12 +521,8 @@ export default function App() {
   }
 
   const tabs = [["picks", "My Bracket"], ["standings", "Standings"], ["chat", "Banter"], ["profile", "Profile"]];
-  const mentionCount = chat.filter(m => m.uid !== me.id && m.mentions && m.mentions.includes(me.id)).length;
-  const [lastSeenMentions, setLastSeenMentions] = useState(0);
+  const mentionCount = me ? chat.filter(m => m.uid !== me.id && m.mentions && m.mentions.includes(me.id)).length : 0;
   const unseenMentions = mentionCount - lastSeenMentions;
-  useEffect(() => {
-    if (tab === "chat" && unseenMentions > 0) setLastSeenMentions(mentionCount);
-  }, [tab, mentionCount]);
   const accent = me.color || C.green;
   const groupsDone = GKEYS.length;
   const thirdsDone = cleanThirds.length;
@@ -862,6 +862,7 @@ function ChatPanel({ chat, me, roster, isAdmin, chatInput, setChatInput, asUpdat
   // @ mention state
   const [mentionQuery,  setMentionQuery ] = useState(null); // null = closed, string = active query
   const [mentionIndex,  setMentionIndex ] = useState(0);   // keyboard-selected index
+  const [emojiGroup,    setEmojiGroup   ] = useState(0);     // active emoji tab
 
   // Tenor v1 API — free demo key, works out of the box.
   // For production, register your own free key at https://tenor.com/developer/keyregistration
@@ -1023,7 +1024,6 @@ function ChatPanel({ chat, me, roster, isAdmin, chatInput, setChatInput, asUpdat
     { label: "👍 React",    emojis: ["👍","👎","❤️","💔","🔥","💯","🎯","✅","❌","⭐","🚀","💤","👀","🫶","🤌","💪","✊","🫠","🙏","👋"] },
     { label: "🌎 Flags",    emojis: ["🇺🇸","🇧🇷","🇩🇪","🇫🇷","🇬🇧","🇦🇷","🇵🇹","🇪🇸","🇳🇱","🇯🇵","🇲🇽","🇦🇺","🇧🇪","🇨🇦","🇨🇷","🇸🇳","🇲🇦","🇨🇴","🇺🇾","🏴󠁧󠁢󠁥󠁮󠁧󠁿"] },
   ];
-  const [emojiGroup, setEmojiGroup] = useState(0);
 
   return (
     <div className="wc-fade" style={{ position: "relative" }}>
